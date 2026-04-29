@@ -223,11 +223,11 @@ wear_compliance_func <- function(path.out, df) {
 # get cohort level stats for each vairable
 # output the dataset into path, and output summary table
 # ───────────────────────────────────────────────────────────────────────────────────────────────────
-activity_prep_stats <- function(path.out, df, cohort) {
+activity_prep_stats <- function(path.out, df, cohort, meta.data) {
     # ── 1. Compute patient-level stats ─────────────────────────────────────────
     key_metrics <- c("steps", "calories_out", "sedentary_minutes",
                     "lightly_active_minutes", "fairly_active_minutes",
-                    "very_active_minutes", "sex_at_birth")
+                    "very_active_minutes")
 
     patient_stats <- df |>
     group_by(person_id) |>
@@ -242,6 +242,7 @@ activity_prep_stats <- function(path.out, df, cohort) {
         .groups = "drop"
     )
     patient_stats$cohort <- cohort
+    patient_stats <-  merge(patient_stats, meta.data[,c('person_id', 'sex_at_birth')], by = 'person_id')
     write.table(patient_stats, paste0(path.out, cohort,'_activity_summary_stats.txt'), sep = '\t', quote = F, row.names = F)
 
     # ── 2. Summary table: distribution of patient means ────────────────────────
@@ -265,6 +266,104 @@ activity_prep_stats <- function(path.out, df, cohort) {
     )
     print(cohort_summary, n = Inf)
     return(patient_stats);
+}
+
+
+
+
+# ───────────────────────────────────────────────────────────────────────────────────────────────────
+# sleep_sum_main_nap_func
+# get cohort level stats for each variable
+# output the dataset into path, and output summary table
+# ───────────────────────────────────────────────────────────────────────────────────────────────────
+sleep_sum_main_nap_func <- function(df) {
+  diabetes_sleep_sum <- df |>
+    group_by(person_id, date) |>
+    summarise(
+      # Flags — did this day have main sleep or nap?
+      has_main_sleep = any(is_main_sleep == "true"),
+      has_nap = any(is_main_sleep == "false"),
+      n_records = n(),
+      
+      # Sum across main + nap for that day
+      minute_in_bed = sum(minute_in_bed,       na.rm = TRUE),  # Total time in bed
+      minute_asleep = sum(minute_asleep,        na.rm = TRUE),  # Total sleep time
+      minute_awake = sum(minute_awake,         na.rm = TRUE),  # Wake after sleep onset
+      minute_restless = sum(minute_restless,      na.rm = TRUE),
+      minute_deep = sum(minute_deep,      na.rm = TRUE),
+      minute_light = sum(minute_light,      na.rm = TRUE),
+      minute_rem = sum(minute_rem,      na.rm = TRUE),
+      minute_wake = sum(minute_wake,      na.rm = TRUE),
+      minute_after_wakeup = sum(minute_after_wakeup,  na.rm = TRUE),
+      main_minute_in_bed = sum(minute_in_bed      * (is_main_sleep == "true"), na.rm = TRUE),
+      main_minute_asleep = sum(minute_asleep      * (is_main_sleep == "true"), na.rm = TRUE),
+      main_minute_awake = sum(minute_awake       * (is_main_sleep == "true"), na.rm = TRUE),
+      main_minute_deep = sum(minute_deep       * (is_main_sleep == "true"), na.rm = TRUE),
+      main_minute_light = sum(minute_light       * (is_main_sleep == "true"), na.rm = TRUE),
+      main_minute_rem = sum(minute_rem       * (is_main_sleep == "true"), na.rm = TRUE),
+      main_minute_wake = sum(minute_wake       * (is_main_sleep == "true"), na.rm = TRUE),
+      
+      # Daily sleep efficiency based on totals
+      sleep_efficiency  = minute_asleep / minute_in_bed * 100,
+      
+      .groups = "drop"
+  )
+  return(diabetes_sleep_sum)
+  
+}
+
+# ───────────────────────────────────────────────────────────────────────────────────────────────────
+# sleep_prep_stats
+# get cohort level stats for each variable
+# output the dataset into path, and output summary table; main = "main"/"nap"/"sum"
+# ───────────────────────────────────────────────────────────────────────────────────────────────────
+sleep_prep_stats <- function(path.out, df, cohort, main) {
+  # ── 1. Compute patient-level stats ─────────────────────────────────────────
+  if (main == "sum") {
+    key_metrics <- c("minute_in_bed", "minute_asleep", "minute_awake",
+                     "minute_deep", "minute_light", "minute_rem", "minute_wake", "sleep_efficiency")
+  } else {
+    key_metrics <- c("minute_in_bed", "minute_asleep", "minute_awake",
+                     "minute_deep", "minute_light", "minute_rem", "minute_wake")
+    
+  }
+
+  patient_stats <- df |>
+    group_by(person_id) |>
+    summarise(
+      n_obs = n(),
+      across(all_of(key_metrics), list(
+        mean = ~mean(.x, na.rm = TRUE),
+        sd   = ~sd(.x,   na.rm = TRUE),
+        cv   = ~ifelse(mean(.x, na.rm = TRUE) > 0,
+                       sd(.x, na.rm = TRUE) / mean(.x, na.rm = TRUE) * 100, NA)
+      ), .names = "{.col}__{.fn}"),
+      .groups = "drop"
+    )
+  patient_stats$cohort <- cohort
+  write.table(patient_stats, paste0(path.out, cohort,'_', main, '_sleep_summary_stats.txt'), sep = '\t', quote = F, row.names = F)
+  
+  # ── 2. Summary table: distribution of patient means ────────────────────────
+  mean_cols <- paste0(key_metrics, "__mean")
+  
+  cohort_summary <- patient_stats |>
+    select(all_of(mean_cols)) |>
+    pivot_longer(everything(), names_to = "metric", values_to = "value") |>
+    mutate(metric = str_remove(metric, "__mean")) |>
+    group_by(metric) |>
+    summarise(
+      N        = sum(!is.na(value)),
+      Mean     = mean(value,              na.rm = TRUE),
+      SD       = sd(value,                na.rm = TRUE),
+      Median   = median(value,            na.rm = TRUE),
+      Q1       = quantile(value, 0.25,    na.rm = TRUE),
+      Q3       = quantile(value, 0.75,    na.rm = TRUE),
+      P5       = quantile(value, 0.05,    na.rm = TRUE),
+      P95      = quantile(value, 0.95,    na.rm = TRUE),
+      .groups  = "drop"
+    )
+  print(cohort_summary, n = Inf)
+  return(patient_stats);
 }
 
 
