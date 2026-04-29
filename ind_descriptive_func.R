@@ -6,7 +6,8 @@ library(patchwork)
 #install.packages("corrplot")
 library(scales)
 library(corrplot)
-
+library(data.table)
+library(stringr)
 
 # ───────────────────────────────────────────────────────────────────────────────────────────────────
 # condition_func 
@@ -277,7 +278,7 @@ activity_prep_stats <- function(path.out, df, cohort, meta.data) {
 # output the dataset into path, and output summary table
 # ───────────────────────────────────────────────────────────────────────────────────────────────────
 sleep_sum_main_nap_func <- function(df) {
-  diabetes_sleep_sum <- df |>
+  sleep_sum <- df |>
     group_by(person_id, date) |>
     summarise(
       # Flags — did this day have main sleep or nap?
@@ -308,8 +309,8 @@ sleep_sum_main_nap_func <- function(df) {
       
       .groups = "drop"
   )
-  return(diabetes_sleep_sum)
-  
+  return(sleep_sum)
+
 }
 
 # ───────────────────────────────────────────────────────────────────────────────────────────────────
@@ -317,6 +318,9 @@ sleep_sum_main_nap_func <- function(df) {
 # get cohort level stats for each variable
 # output the dataset into path, and output summary table; main = "main"/"nap"/"sum"
 # ───────────────────────────────────────────────────────────────────────────────────────────────────
+library(data.table)
+library(stringr)
+
 sleep_prep_stats <- function(path.out, df, cohort, main) {
   # ── 1. Compute patient-level stats ─────────────────────────────────────────
   if (main == "sum") {
@@ -327,7 +331,7 @@ sleep_prep_stats <- function(path.out, df, cohort, main) {
                      "minute_deep", "minute_light", "minute_rem", "minute_wake")
     
   }
-
+  
   patient_stats <- df |>
     group_by(person_id) |>
     summarise(
@@ -365,6 +369,7 @@ sleep_prep_stats <- function(path.out, df, cohort, main) {
   print(cohort_summary, n = Inf)
   return(patient_stats);
 }
+
 
 
 # ───────────────────────────────────────────────────────────────────────────────────────────────────
@@ -442,3 +447,179 @@ miss_gap_func <- function(path.out, df) {
   return();
 }
 
+
+# ───────────────────────────────────────────────────────────────────────────────────────────────────
+# sleep_prep_stats_from_gcs
+# read large files for healthy cohort
+# ───────────────────────────────────────────────────────────────────────────────────────────────────
+sum_main_nap_dt <- function(dt) {
+  dt_agg <- dt[, .(
+    has_main_sleep      = any(is_main_sleep == "true"),
+    has_nap             = any(is_main_sleep == "false"),
+    n_records           = .N,
+    minute_in_bed       = sum(minute_in_bed,       na.rm = TRUE),
+    minute_asleep       = sum(minute_asleep,        na.rm = TRUE),
+    minute_awake        = sum(minute_awake,         na.rm = TRUE),
+    minute_restless     = sum(minute_restless,      na.rm = TRUE),
+    minute_deep         = sum(minute_deep,          na.rm = TRUE),
+    minute_light        = sum(minute_light,         na.rm = TRUE),
+    minute_rem          = sum(minute_rem,           na.rm = TRUE),
+    minute_wake         = sum(minute_wake,          na.rm = TRUE),
+    minute_after_wakeup = sum(minute_after_wakeup,  na.rm = TRUE),
+    main_minute_in_bed  = sum(minute_in_bed  * (is_main_sleep == "true"), na.rm = TRUE),
+    main_minute_asleep  = sum(minute_asleep  * (is_main_sleep == "true"), na.rm = TRUE),
+    main_minute_awake   = sum(minute_awake   * (is_main_sleep == "true"), na.rm = TRUE),
+    main_minute_deep    = sum(minute_deep    * (is_main_sleep == "true"), na.rm = TRUE),
+    main_minute_light   = sum(minute_light   * (is_main_sleep == "true"), na.rm = TRUE),
+    main_minute_rem     = sum(minute_rem     * (is_main_sleep == "true"), na.rm = TRUE),
+    main_minute_wake    = sum(minute_wake    * (is_main_sleep == "true"), na.rm = TRUE)
+    # sleep_efficiency intentionally excluded — computed after full dedup
+  ), by = .(person_id, sleep_date)]
+}
+
+sleep_pipeline_from_gcs <- function(path.out, export_path, cohort, main) {
+  
+  if (main == "sum") {
+    # sleep_efficiency excluded from key_metrics — computed separately below
+    key_metrics <- c("minute_in_bed", "minute_asleep", "minute_awake",
+                     "minute_deep", "minute_light", "minute_rem", "minute_wake")
+    include_efficiency <- TRUE
+  } else {
+    key_metrics        <- c("minute_in_bed", "minute_asleep", "minute_awake",
+                            "minute_deep", "minute_light", "minute_rem", "minute_wake")
+    include_efficiency <- FALSE
+  }
+  
+  raw_cols_needed <- c("person_id", "sleep_date", "is_main_sleep",
+                       "minute_in_bed", "minute_asleep", "minute_awake",
+                       "minute_restless", "minute_deep", "minute_light",
+                       "minute_rem", "minute_wake", "minute_after_wakeup")
+  
+  csv_files <- system2('gsutil', args = c('ls', export_path),
+                       stdout = TRUE, stderr = FALSE)
+  cat("Found", length(csv_files), "CSV files.\n")
+  dir.create(path.out, showWarnings = FALSE, recursive = TRUE)
+  
+  daily_file   <- paste0(path.out, cohort, "_", main, "_daily_summary.txt")
+  stats_file   <- paste0(path.out, cohort, "_", main, "_sleep_summary_stats.txt")
+  log_file     <- paste0(path.out, cohort, "_", main, "_processed_files.log")
+  first_write  <- TRUE
+  
+  # Track already-processed files to allow safe rerun
+  done_files <- if (file.exists(log_file)) readLines(log_file) else character(0)
+  
+  for (i in seq_along(csv_files)) {
+    csv      <- csv_files[[i]]
+    csv_base <- basename(csv)
+    if (csv_base %in% done_files) {
+      cat("Skipping (already processed):", csv_base, "\n")
+      first_write <- FALSE   # daily_file already has a header
+      next
+    }
+    
+    cat("File", i, "/", length(csv_files), ":", csv_base, "\n")
+    
+    tryCatch({
+      # Safely select only columns that actually exist in this shard
+      all_cols  <- names(fread(cmd = paste("gsutil cat", shQuote(csv)),
+                               nrows = 0))
+      use_cols  <- intersect(raw_cols_needed, all_cols)
+      missing   <- setdiff(raw_cols_needed, all_cols)
+      if (length(missing) > 0)
+        cat("  WARNING: missing columns:", paste(missing, collapse = ", "), "\n")
+      
+      dt_raw   <- fread(cmd = paste("gsutil cat", shQuote(csv)),
+                        select = use_cols, na.strings = c("", "NA", "NULL"))
+      
+      # Add missing columns as NA so downstream code doesn't break
+      for (col in missing) dt_raw[, (col) := NA_real_]
+      
+      dt_daily <- sum_main_nap_dt(dt_raw)
+      rm(dt_raw); gc()
+      
+      fwrite(dt_daily, daily_file, sep = "\t", quote = FALSE,
+             append = !first_write, col.names = first_write)
+      first_write <- FALSE
+      rm(dt_daily); gc()
+      
+      # Log success — enables safe rerun
+      cat(csv_base, file = log_file, append = TRUE, sep = "\n")
+      
+    }, error = function(e) {
+      cat("  ERROR on", csv_base, ":", conditionMessage(e), "\n")
+    })
+  }
+  
+  # ── Dedup: collapse any (person_id, sleep_date) split across shards ─────────
+  cat("Deduplicating daily summary...\n")
+  dt_daily_all <- fread(daily_file)
+  
+  minute_cols <- c("minute_in_bed", "minute_asleep", "minute_awake",
+                   "minute_restless", "minute_deep", "minute_light",
+                   "minute_rem", "minute_wake", "minute_after_wakeup",
+                   "main_minute_in_bed", "main_minute_asleep", "main_minute_awake",
+                   "main_minute_deep", "main_minute_light", "main_minute_rem",
+                   "main_minute_wake")
+  
+  dt_daily_all <- dt_daily_all[, c(
+    list(has_main_sleep = any(has_main_sleep),
+         has_nap        = any(has_nap),
+         n_records      = sum(n_records)),
+    lapply(.SD, sum, na.rm = TRUE)
+  ), by = .(person_id, sleep_date), .SDcols = minute_cols]
+  
+  # Compute sleep_efficiency AFTER dedup, from correct totals
+  dt_daily_all[, sleep_efficiency := minute_asleep / minute_in_bed * 100]
+  
+  # Check for implausible values
+  n_bad_eff <- dt_daily_all[sleep_efficiency > 100 | sleep_efficiency < 0, .N]
+  if (n_bad_eff > 0)
+    cat("  WARNING:", n_bad_eff, "rows with sleep_efficiency outside [0,100]\n")
+  
+  fwrite(dt_daily_all, daily_file, sep = "\t", quote = FALSE)
+  
+  # ── Patient-level stats ───────────────────────────────────────────────────
+  cat("Computing patient stats...\n")
+  stats_metrics <- if (include_efficiency) c(key_metrics, "sleep_efficiency") else key_metrics
+  
+  patient_stats <- dt_daily_all[, {
+    result <- list(n_days = .N,
+                   pct_days_with_nap       = mean(has_nap,        na.rm = TRUE) * 100,
+                   pct_days_with_mainsleep = mean(has_main_sleep,  na.rm = TRUE) * 100)
+    for (col in stats_metrics) {
+      x <- get(col)
+      m <- mean(x, na.rm = TRUE)
+      s <- sd(x,   na.rm = TRUE)
+      result[[paste0(col, "__mean")]] <- m
+      result[[paste0(col, "__sd")]]   <- s
+      result[[paste0(col, "__cv")]]   <- ifelse(m > 0, s / m * 100, NA_real_)
+    }
+    # Patient-level efficiency from totals — more accurate than mean of daily ratios
+    result[["sleep_efficiency_overall"]] <-
+      sum(minute_asleep, na.rm = TRUE) / sum(minute_in_bed, na.rm = TRUE) * 100
+    result
+  }, by = person_id]
+  
+  patient_stats[, cohort := cohort]
+  fwrite(patient_stats, stats_file, sep = "\t", quote = FALSE)
+  rm(dt_daily_all); gc()
+  
+  # ── Cohort summary ────────────────────────────────────────────────────────
+  mean_cols <- paste0(stats_metrics, "__mean")
+  cohort_summary <- melt(
+    patient_stats[, c("person_id", mean_cols), with = FALSE],
+    id.vars = "person_id", variable.name = "metric", value.name = "value"
+  )[, metric := str_remove(as.character(metric), "__mean")
+  ][, .(N      = sum(!is.na(value)),
+        Mean   = mean(value,           na.rm = TRUE),
+        SD     = sd(value,             na.rm = TRUE),
+        Median = median(value,         na.rm = TRUE),
+        Q1     = quantile(value, 0.25, na.rm = TRUE),
+        Q3     = quantile(value, 0.75, na.rm = TRUE),
+        P5     = quantile(value, 0.05, na.rm = TRUE),
+        P95    = quantile(value, 0.95, na.rm = TRUE)),
+    by = metric]
+  
+  print(as.data.frame(cohort_summary))
+  return(invisible(patient_stats))
+}

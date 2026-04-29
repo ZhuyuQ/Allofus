@@ -190,7 +190,19 @@ ac_active_plot_bysex_func <- function(df, path.out) {
       sex    = factor(sex, levels = c("Female", "Male", "Other")),
       cohort = factor(cohort, levels = c("Insomnia", "Diabetes", "Healthy", "Prostate"))
     )
-  
+  summary_tbl <- p_v3_data |>
+    group_by(cohort, sex) |>
+    summarise(
+      N      = n(),
+      Mean   = round(mean(calories_out__mean,             na.rm = TRUE), 1),
+      SD     = round(sd(calories_out__mean,               na.rm = TRUE), 1),
+      Median = round(median(calories_out__mean,           na.rm = TRUE), 1),
+      Q1     = round(quantile(calories_out__mean, 0.25,   na.rm = TRUE), 1),
+      Q3     = round(quantile(calories_out__mean, 0.75,   na.rm = TRUE), 1),
+      .groups = "drop"
+    ) |>
+    arrange(cohort, sex)
+  print(summary_tbl)
   kw_v3 <- p_v3_data |>
     group_by(sex) |>
     filter(n_distinct(cohort) > 1) |>
@@ -241,8 +253,7 @@ ac_sleep_plot_func <- function(df, path.out) {
   # ── Plot 1: Activity minutes by cohort ───────────────────────────────────────
   p_v1_data <- df |>
     select(person_id, cohort,
-           sedentary_minutes__mean, lightly_active_minutes__mean,
-           fairly_active_minutes__mean, very_active_minutes__mean) |>
+           minute_in_bed__mean, minute_asleep__mean, minute_awake__mean, minute_deep__mean, minute_light__mean, minute_rem__mean, minute_wake__mean) |>
     pivot_longer(ends_with("__mean"), names_to = "metric", values_to = "mean_val") |>
     mutate(
       metric = str_remove(metric, "__mean"),
@@ -263,37 +274,38 @@ ac_sleep_plot_func <- function(df, path.out) {
                  fill = "white", color = "gray30") +
     geom_text(data = kw_v1, aes(x = 2.5, y = Inf, label = label),
               inherit.aes = FALSE, vjust = 1.5, size = 3, fontface = "italic") +
-    facet_wrap(~metric, scales = "free_y", ncol = 2) +
+    facet_wrap(~metric, scales = "free_y", ncol = 7) +
     scale_fill_manual(values = cohort_colors) +
-    labs(title = "Patient-Level Mean Activity Minutes by Cohort",
+    labs(title = "Patient-Level Mean Sleep Minutes by Cohort",
          x = NULL, y = "Mean minutes/day", fill = "Cohort") +
     theme_bw(base_size = 11) +
     theme(strip.text      = element_text(face = "bold"),
           axis.text.x     = element_text(angle = 30, hjust = 1),
           legend.position = "bottom")
-  ggsave(p_v1,      filename = paste0(path.out, "activity_zoneminutes_violin.png"), width = 9, height = 8, dpi = 150)
+  ggsave(p_v1,      filename = paste0(path.out, "sleep_stage_violin.png"), width = 12, height = 6, dpi = 150)
   
-  # ── Plot 2: Steps by cohort ───────────────────────────────────────────────────
+  ### sleep efficiency
   p_v2_data <- df |>
     filter(!is.na(cohort)) |>
-    select(person_id, cohort, steps__mean) |>
-    rename(mean_val = steps__mean) |>
+    select(person_id, cohort, sleep_efficiency__mean) |>
+    rename(mean_val = sleep_efficiency__mean) |>
     mutate(cohort = factor(cohort, levels = c("Insomnia", "Diabetes", "Healthy","Prostate")))
   
-  step_upper <- p_v2_data |>
+  sleep_efficiency_upper <- p_v2_data |>
     group_by(cohort) |>
     summarise(upper = quantile(mean_val, 0.75, na.rm = TRUE) +
                 3 * IQR(mean_val, na.rm = TRUE)) |>
     pull(upper) |> max()
+  print(sleep_efficiency_upper)
   
   outlier_counts <- p_v2_data |>
     group_by(cohort) |>
     summarise(
-      n_out  = sum(mean_val > step_upper, na.rm = TRUE),
+      n_out  = sum(mean_val > sleep_efficiency_upper, na.rm = TRUE),
       label  = ifelse(n_out > 0, paste0("n=", n_out, " above"), ""),
-      y_pos  = step_upper * 0.98
+      y_pos  = sleep_efficiency_upper * 0.98
     )
-  
+  print(outlier_counts)
   # ── KW test ───────────────────────────────────────────────────────────────────
   kw_v2 <- p_v2_data |> kruskal_test(mean_val ~ cohort)
   kw_label <- paste0("Kruskal-Wallis p",
@@ -305,91 +317,33 @@ ac_sleep_plot_func <- function(df, path.out) {
   # ── Plot ──────────────────────────────────────────────────────────────────────
   p_v2 <- ggplot(p_v2_data, aes(x = cohort, y = mean_val, fill = cohort)) +
     geom_violin(color = NA, alpha = 0.8,
-                data = p_v2_data |> filter(mean_val <= step_upper)) +
+                data = p_v2_data |> filter(mean_val <= sleep_efficiency_upper)) +
     geom_boxplot(width = 0.1, outlier.shape = NA,
                  fill = "white", color = "gray30") +
-    geom_hline(yintercept = 10000, linetype = "dashed",
-               color = "gray40", linewidth = 0.6) +
     geom_text(data = outlier_counts,
               aes(x = cohort, y = y_pos, label = label),
               inherit.aes = FALSE, size = 3, color = "#C0392B",
               vjust = 1, fontface = "italic") +
-    annotate("text", x = 4.4, y = 10000, vjust = -0.5,
-             hjust = 1, size = 3, color = "gray40",
-             label = "10,000 step target") +
-    annotate("text", x = 3.9, y = step_upper * 0.05,
+    annotate("text", x = 3.9, y = sleep_efficiency_upper * 1.04,
              hjust = 0, vjust = 0, size = 2.2, fontface = "italic",
-             color = "gray40", label = kw_label) +
+             label = kw_label) +
     stat_pvalue_manual(dunn_v2, label = "p.adj.signif", tip.length = 0.01,
-                       hide.ns = TRUE, size = 3, y.position = c(18000, 21000, 23000, 20000, 19000, 22000)) +
-    coord_cartesian(ylim = c(0, step_upper)) +
+                       hide.ns = TRUE, size = 3, y.position = c(100, 103, 102, 101, 104)) +
+    coord_cartesian(ylim = c(65, sleep_efficiency_upper * 1.05)) +
     scale_fill_manual(values = cohort_colors) +
-    labs(title    = "Patient-Level Mean Daily Steps by Cohort",
-         x = NULL, y = "Mean steps/day", fill = "Cohort") +
+    labs(title    = "Patient-Level Mean Daily Sleep Efficiency by Cohort",
+         x = NULL, y = "Mean sleep efficiency/day", fill = "Cohort") +
     theme_bw(base_size = 11) +
     theme(axis.text.x     = element_text(angle = 30, hjust = 1),
           legend.position = "bottom")
   
-  ggsave(p_v2,      filename = paste0(path.out, "activity_steps_violin.png"),       width = 7, height = 5, dpi = 150)
-  
-  # ── CV plot by cohort ─────────────────────────────────────────────────────────
-  key_metrics <- c("steps", "calories_out", "sedentary_minutes",
-                   "lightly_active_minutes", "fairly_active_minutes",
-                   "very_active_minutes")
-  p_cv <- df |>
-    select(person_id, cohort, all_of(paste0(key_metrics, "__cv"))) |>
-    pivot_longer(ends_with("__cv"), names_to = "metric", values_to = "cv") |>
-    mutate(
-      metric = str_remove(metric, "__cv"),
-      metric = str_replace_all(metric, "_", " ") |> str_to_title(),
-      cohort = factor(cohort, levels = c("Healthy", "Insomnia", "Diabetes", "Prostate"))
-    ) |>
-    filter(!is.na(cv), cv < 200) |>
-    ggplot(aes(x = cohort, y = cv, fill = cohort)) +
-    geom_violin(color = NA, alpha = 0.8) +
-    geom_boxplot(width = 0.15, outlier.size = 0.3, outlier.alpha = 0.4,
-                 fill = "white", color = "gray30") +
-    geom_hline(yintercept = 30, linetype = "dashed",
-               color = "#C0392B", linewidth = 0.5) +
-    facet_wrap(~metric, scales = "free_y", ncol = 2) +
-    scale_fill_manual(values = cohort_colors) +
-    labs(title    = "Within-Person Variability (CV%) by Cohort",
-         subtitle = "Red dashed = 30% CV reference",
-         x = NULL, y = "CV (%)", fill = "Cohort") +
-    theme_bw(base_size = 11) +
-    theme(strip.text      = element_text(face = "bold"),
-          axis.text.x     = element_text(angle = 30, hjust = 1),
-          legend.position = "bottom")
-  ggsave(p_cv, filename = paste0(path.out, "activity_cv_violin.png"),width = 9, height = 8, dpi = 150)
-  
-  
-  # ── Mean vs SD scatter by cohort ──────────────────────────────────────────────
-  p_mean_sd <- df |>
-    select(person_id, cohort, n_obs,
-           ends_with("__mean"), ends_with("__sd")) |>
-    pivot_longer(-c(person_id, cohort, n_obs),
-                 names_to  = c("metric", ".value"),
-                 names_sep = "__") |>
-    mutate(metric = str_replace_all(metric, "_", " ") |> str_to_title(),
-           cohort = factor(cohort, levels = c("Healthy", "Insomnia",
-                                              "Diabetes", "Prostate"))) |>
-    filter(!is.na(mean), !is.na(sd)) |>
-    ggplot(aes(x = mean, y = sd, color = cohort)) +
-    geom_point(size = 0.4, alpha = 0.1) +
-    geom_smooth(method = "loess", se = FALSE, linewidth = 0.7) +
-    facet_wrap(~metric, scales = "free", ncol = 3) +
-    scale_color_manual(values = cohort_colors) +
-    labs(title  = "Patient Mean vs. SD by Cohort (Heteroscedasticity Check)",
-         x = "Patient mean", y = "Patient SD", color = "Cohort") +
-    theme_bw(base_size = 11) +
-    theme(strip.text      = element_text(face = "bold"),
-          legend.position = "bottom")
-  
-  ggsave(p_mean_sd, filename = paste0(path.out, "activity_mean_sd.png"), width = 10, height = 7, dpi = 150)
+  ggsave(
+    p_v2,
+    filename = paste0(path.out, "sleep_efficiency_violin.png"),
+    width = 7, height = 9, dpi = 150)
   
   return()
 }
-
 
 
 
