@@ -9,18 +9,26 @@ library(corrplot)
 library(data.table)
 library(stringr)
 
+# ── Helper: format as "n (x%)" ───────────────────────────────────────────────
+fmt <- function(n, total) {
+  pct <- round(n / total * 100)
+  if (pct < 1) paste0(format(n, big.mark = ","), " (<1%)")
+  else         paste0(format(n, big.mark = ","), " (", pct, "%)")
+}
+
 # ───────────────────────────────────────────────────────────────────────────────────────────────────
 # condition_func 
 # get summary statistics for commobidity conditions for each cohort
-# No condition, Hyperlipidemia 55822004, obesity 414916001, Essential hypertension59621000, coronary arteriosclerosis 53741008
+# No condition, Hyperlipidemia 55822004, obesity 414916001, Essential hypertension59621000, 
+# coronary arteriosclerosis 53741008 diabetes mellitus, 73211009
 # ───────────────────────────────────────────────────────────────────────────────────────────────────
 condition_func <- function(df) {
     n <- length(unique(df$person_id));
     print(n)
     # non of teh conditions
     print('non of the conditions')
-    print(nrow(df[which(df$standard_concept_code %in% c('55822004', '414916001', '59621000', '53741008', '19829001')),])) 
-    atleast1_df <- df[which(df$standard_concept_code %in% c('55822004', '414916001', '59621000', '53741008', '19829001')),]
+    print(nrow(df[which(df$standard_concept_code %in% c('55822004', '414916001', '59621000', '53741008', '19829001', '73211009')),])) 
+    atleast1_df <- df[which(df$standard_concept_code %in% c('55822004', '414916001', '59621000', '53741008', '19829001', '73211009')),]
     print('non of the conditions')
     print(length(unique(df$person_id)) - length(unique(atleast1_df$person_id)))
     print((length(unique(df$person_id)) - length(unique(atleast1_df$person_id)))/n)
@@ -31,7 +39,7 @@ condition_func <- function(df) {
     hyperlip_df <- df[which(df$standard_concept_code == '55822004'),]
     print(length(unique(hyperlip_df$person_id)))
     print(length(unique(hyperlip_df$person_id))/n)
-    print(hyperlip_df[1:3,])
+    print(hyperlip_df[1:3,1:3])
           
     # obesity 414916001
     print('obesity')
@@ -39,7 +47,7 @@ condition_func <- function(df) {
     obese_df <- df[which(df$standard_concept_code == '414916001'),]
     print(length(unique(obese_df$person_id)))
     print(length(unique(obese_df$person_id))/n)
-    print(obese_df[1:3,])
+    print(obese_df[1:3,1:3])
 
     # # Essential hypertension59621000
     print('hypertension')
@@ -47,7 +55,7 @@ condition_func <- function(df) {
     hypertension_df <-df[which(df$standard_concept_code == '59621000'),]
     print(length(unique(hypertension_df$person_id)))
     print(length(unique(hypertension_df$person_id))/n)
-    print(hypertension_df[1:3,])
+    print(hypertension_df[1:3,1:3])
     
     # pulmonary disease is defined within the structural hierarchy, commonly under the concept Disorder of lung (19829001). 
     print('pulmonary')
@@ -55,19 +63,135 @@ condition_func <- function(df) {
     pulmonary_df <- df[which(df$standard_concept_code == '19829001'),]
     print(length(unique(pulmonary_df$person_id)))
     print(length(unique(pulmonary_df$person_id))/n)
-    print(pulmonary_df[1:3,])
+    print(pulmonary_df[1:3,1:3])
 
     #coronary arteriosclerosis 53741008
     print('coronary arteriosclerosis')
     print(nrow(df[which(df$standard_concept_code == '53741008'),]))
-    artery_df <- df[which(df$standard_concept_code == '53741008 '),]
+    artery_df <- df[which(df$standard_concept_code == '53741008'),]
     print(length(unique(artery_df$person_id)))
     print(length(unique(artery_df$person_id))/n)
     print(artery_df[1:3,])
-
+    
+    #diabetes mellitus, 73211009
+    print('diabetes mellitus')
+    print(nrow(df[which(df$standard_concept_code == '73211009'),]))
+    diabetes_df <- df[which(df$standard_concept_code == '73211009'),]
+    print(length(unique(diabetes_df$person_id)))
+    print(length(unique(diabetes_df$person_id))/n)
+    print(diabetes_df[1:3,1:3])
+    
     return();
 }
 
+
+
+
+# ───────────────────────────────────────────────────────────────────────────────────────────────────
+# demographic_tbl_func 
+# get summary statistics for demographic meta data
+# ───────────────────────────────────────────────────────────────────────────────────────────────────
+demographic_tbl_func <- function(df) {
+    # ── 1. Derive age from date_of_birth ─────────────────────────────────────────
+    age <- df %>%
+      mutate(
+        dob       = as.Date(substr(date_of_birth, 1, 10)),
+        age       = as.integer(floor(interval(dob, Sys.Date()) / years(1))),
+        age_group = case_when(
+          age >= 18 & age <= 44 ~ "18-44",
+          age >= 45 & age <= 64 ~ "45-64",
+          age >= 65              ~ ">65",
+          TRUE                   ~ NA_character_
+        )
+      )
+    
+    N <- nrow(df)
+    
+    # ── 2. Age ────────────────────────────────────────────────────────────────────
+    age_tbl <- age %>%
+      count(age_group) %>%
+      mutate(
+        Demographic = age_group,
+        Value       = map_chr(n, ~ fmt(.x, N))
+      ) %>%
+      filter(!is.na(Demographic)) %>%
+      arrange(Demographic) %>%
+      select(Demographic, Value)
+    
+    # ── 3. Ethnicity ──────────────────────────────────────────────────────────────
+    # Map ethnicity_concept_id:
+    # everything else = Others
+    eth_tbl <- df %>%
+      mutate(eth_group = case_when(
+        ethnicity_concept_id == 38003563 ~ "Hispanic or Latino",
+        ethnicity_concept_id == 38003564 ~ "Not Hispanic or Latino",
+        TRUE                             ~ "Others"
+      )) %>%
+      count(eth_group) %>%
+      mutate(
+        Demographic = eth_group,
+        Value       = map_chr(n, ~ fmt(.x, N))
+      ) %>%
+      select(Demographic, Value)
+    
+    # ── 4. Race ───────────────────────────────────────────────────────────────────
+    # Standard All of Us race concept IDs
+    race_map <- c(
+      "8657" = "American Indian or Alaska Native",
+      "8515" = "Asian",
+      "8516" = "Black or African American",
+      "38003615" = "Middle Eastern or North African",
+      "8657" = "Native Hawaiian or Other Pacific Islander",
+      "8527" = "White",
+      "2000000008" = "More than one population"
+    )
+    
+    race_tbl <- df %>%
+      mutate(race_group = case_when(
+        as.character(race_concept_id) %in% names(race_map) ~
+          race_map[as.character(race_concept_id)],
+        TRUE ~ "Others"
+      )) %>%
+      count(race_group) %>%
+      mutate(
+        Demographic = race_group,
+        Value       = map_chr(n, ~ fmt(.x, N))
+      ) %>%
+      arrange(Demographic) %>%
+      select(Demographic, Value)
+    
+    # ── 5. Sex at birth ───────────────────────────────────────────────────────────
+    # 45878463 = Female, 45873798 = Male, else Others
+    sex_tbl <- df %>%
+      mutate(sex_group = case_when(
+        sex_at_birth_concept_id == 45878463 ~ "Female",
+        sex_at_birth_concept_id == 45880669 ~ "Male",
+        TRUE                                 ~ "Others"
+      )) %>%
+      count(sex_group) %>%
+      mutate(
+        Demographic = sex_group,
+        Value       = map_chr(n, ~ fmt(.x, N))
+      ) %>%
+      select(Demographic, Value)
+    
+    # ── 6. Assemble the full table ────────────────────────────────────────────────
+    demo_table <- bind_rows(
+      tibble(Demographic = "N",              Value = format(N, big.mark = ",")),
+      tibble(Demographic = "Age",            Value = ""),
+      age_tbl,
+      tibble(Demographic = "Ethnicity",      Value = ""),
+      eth_tbl,
+      tibble(Demographic = "Race",           Value = ""),
+      race_tbl,
+      tibble(Demographic = "Sex at birth",   Value = ""),
+      sex_tbl
+    )
+    
+    print(demo_table, n = Inf)
+
+  return()
+}
 
 # ───────────────────────────────────────────────────────────────────────────────────────────────────
 # wear_compliance_func
@@ -270,8 +394,6 @@ activity_prep_stats <- function(path.out, df, cohort, meta.data) {
 }
 
 
-
-
 # ───────────────────────────────────────────────────────────────────────────────────────────────────
 # sleep_sum_main_nap_func
 # get cohort level stats for each variable
@@ -449,6 +571,86 @@ miss_gap_func <- function(path.out, df) {
 
 
 # ───────────────────────────────────────────────────────────────────────────────────────────────────
+# filter_pid_func
+# output person_id with  longest consecutive run of missing days ≤ 14;≥ 70% compliance
+# ───────────────────────────────────────────────────────────────────────────────────────────────────
+filter_pid_func <- function(path.out, df, cohort, type){
+  eligible_ids <- df |>
+    group_by(person_id) |>
+    summarise(
+      n_days        = n(),
+      first_date    = min(date),
+      last_date     = max(date),
+      followup_days = as.numeric(last_date - first_date) + 1,
+      obs_dates     = list(sort(unique(date))),
+      .groups       = "drop"
+    ) |>
+    mutate(
+      pct_wear = (n_days / followup_days) * 100
+    ) |>
+    rowwise() |>
+    mutate(
+      full_seq    = list(seq(first_date, last_date, by = "day")),
+      missing_seq = list(setdiff(as.numeric(full_seq), as.numeric(obs_dates))),
+      max_gap     = {
+        m <- missing_seq
+        if (length(m) == 0) {
+          0L
+        } else {
+          run_id <- cumsum(c(1L, diff(m) != 1L))
+          max(as.integer(table(run_id)))
+        }
+      }
+    ) |>
+    ungroup() |>
+    filter(
+      max_gap  <= 14,
+      pct_wear >= 70
+    ) |>
+    pull(person_id)
+  write.table(eligible_ids <- df |>
+  group_by(person_id) |>
+  summarise(
+    n_days        = n(),
+    first_date    = min(date),
+    last_date     = max(date),
+    followup_days = as.numeric(last_date - first_date) + 1,
+    obs_dates     = list(sort(unique(date))),
+    .groups       = "drop"
+  ) |>
+  mutate(
+    pct_wear = (n_days / followup_days) * 100
+  ) |>
+  rowwise() |>
+  mutate(
+    full_seq    = list(seq(first_date, last_date, by = "day")),
+    missing_seq = list(setdiff(as.numeric(full_seq), as.numeric(obs_dates))),
+    max_gap     = {
+      m <- missing_seq
+      if (length(m) == 0) {
+        0L
+      } else {
+        run_id <- cumsum(c(1L, diff(m) != 1L))
+        max(as.integer(table(run_id)))
+      }
+    }
+  ) |>
+  ungroup() |>
+  filter(
+    max_gap  <= 14,
+    pct_wear >= 70
+  ) |>
+  pull(person_id))
+  
+  print(length(eligible_ids))
+  
+  write.table(eligible_ids, paste0(path.out, cohort, '_', type, '_pid_filtered.txt'), sep = '\t', quote = F, row.names = F)
+  
+}
+
+
+
+# ───────────────────────────────────────────────────────────────────────────────────────────────────
 # sleep_prep_stats_from_gcs
 # read large files for healthy cohort
 # ───────────────────────────────────────────────────────────────────────────────────────────────────
@@ -622,4 +824,52 @@ sleep_pipeline_from_gcs <- function(path.out, export_path, cohort, main) {
   
   print(as.data.frame(cohort_summary))
   return(invisible(patient_stats))
+}
+
+
+# ───────────────────────────────────────────────────────────────────────────────────────────────────
+# hr_prep_stats
+# get cohort level stats for each variable
+# output the dataset into path, and output summary table
+# ───────────────────────────────────────────────────────────────────────────────────────────────────
+hr_prep_stats <- function(path.out, df, cohort) {
+  # ── 1. Compute patient-level stats ─────────────────────────────────────────
+  key_metrics <- c("min_heart_rate", "max_heart_rate", "minute_in_zone", "calorie_count")
+  
+  patient_stats <- df |>
+    group_by(person_id, zone_name) |>
+    summarise(
+      n_obs = n(),
+      across(all_of(key_metrics), list(
+        mean = ~mean(.x, na.rm = TRUE),
+        sd   = ~sd(.x,   na.rm = TRUE),
+        cv   = ~ifelse(mean(.x, na.rm = TRUE) > 0,
+                       sd(.x, na.rm = TRUE) / mean(.x, na.rm = TRUE) * 100, NA)
+      ), .names = "{.col}__{.fn}"),
+      .groups = "drop"
+    )
+  patient_stats$cohort <- cohort
+  write.table(patient_stats, paste0(path.out, cohort,'_hr_summary_stats.txt'), sep = '\t', quote = F, row.names = F)
+  
+  # ── 2. Summary table: distribution of patient means ────────────────────────
+  mean_cols <- paste0(key_metrics, "__mean")
+  
+  cohort_summary <- patient_stats |>
+    select(all_of(mean_cols)) |>
+    pivot_longer(everything(), names_to = "metric", values_to = "value") |>
+    mutate(metric = str_remove(metric, "__mean")) |>
+    group_by(metric) |>
+    summarise(
+      N        = sum(!is.na(value)),
+      Mean     = mean(value,              na.rm = TRUE),
+      SD       = sd(value,                na.rm = TRUE),
+      Median   = median(value,            na.rm = TRUE),
+      Q1       = quantile(value, 0.25,    na.rm = TRUE),
+      Q3       = quantile(value, 0.75,    na.rm = TRUE),
+      P5       = quantile(value, 0.05,    na.rm = TRUE),
+      P95      = quantile(value, 0.95,    na.rm = TRUE),
+      .groups  = "drop"
+    )
+  print(cohort_summary, n = Inf)
+  return(patient_stats);
 }
