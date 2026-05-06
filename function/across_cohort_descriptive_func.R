@@ -446,6 +446,12 @@ final_demographic_plot_cii_func <- function(df, path.out) {
   
   # ── PLOT 2: Density curve of CCI score by cohort ──────────────────────────────
   # Add median lines per cohort
+  cohort_colors <- c(
+    "Diabetes"       = "#E74C3C",
+    "Prostate" = "#3498DB",
+    "Insomnia"       = "#F39C12",
+    "Healthy"        = "#27AE60"
+  )
   cohort_medians <- df %>%
     group_by(cohort) %>%
     summarise(median_cci = median(cci_score), .groups = "drop")

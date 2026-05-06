@@ -860,3 +860,25 @@ cci_calc_func <- function(df, path.out) {
     select(-age, -age_points)
   return(cci_scores)
 }
+
+
+
+# ── CCI for healthy patients with no conditions, only consider age ─────────────────────
+healthy_cci_func <- function(df) {
+  age_lookup <- df %>%
+    group_by(person_id) %>%
+    summarise(age = max(age, na.rm = TRUE), .groups = "drop") %>%  # or min/median
+    mutate(
+      age_points = case_when(
+        age >= 80 ~ 4,
+        age >= 70 ~ 3,
+        age >= 60 ~ 2,
+        age >= 50 ~ 1,
+        TRUE      ~ 0
+      )
+    )
+  
+  return(age_lookup)
+}
+
+
