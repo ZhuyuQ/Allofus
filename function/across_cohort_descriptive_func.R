@@ -345,5 +345,243 @@ ac_sleep_plot_func <- function(df, path.out) {
   return()
 }
 
+# ───────────────────────────────────────────────────────────────────────────────────────────────────
+# final_demographic_plot_condition_func
+# plots for conditions for final df
+# curves, barplot, 
+# ───────────────────────────────────────────────────────────────────────────────────────────────────
+final_demographic_plot_cii_func <- function(df, path.out) {
+  # ── CCI category labels ───────────────────────────────────────────────────────
+  cci_categorized <- df %>%
+    mutate(cci_category = case_when(
+      cci_score == 0            ~ "None (0)",
+      cci_score <= 2            ~ "Mild (1-2)",
+      cci_score <= 4            ~ "Moderate (3-4)",
+      cci_score >= 5            ~ "Severe (≥5)"
+    )) %>%
+    mutate(cci_category = factor(cci_category,
+                                 levels = c("None (0)", "Mild (1-2)",
+                                            "Moderate (3-4)", "Severe (≥5)")))
+  
+  # ── Summary table: median CCI + n and % per category within each cohort ───────
+  cci_summary <- cci_categorized %>%
+    group_by(cohort) %>%
+    mutate(
+      n_cohort   = n(),
+      median_cci = median(cci_score)
+    ) %>%
+    group_by(cohort, cci_category, n_cohort, median_cci) %>%
+    summarise(n_category = n(), .groups = "drop") %>%
+    mutate(pct = round(n_category / n_cohort * 100, 1))
+  
+  print(cci_summary)
+  
+  cci_categorized2 <- df %>%
+    mutate(cci_category = case_when(
+      cci_score <= 7            ~ "<=7",
+      cci_score == 8            ~ "8",
+      cci_score == 9            ~ "9",
+      cci_score == 10            ~ "10",
+      cci_score >= 11            ~ ">=11"
+    )) %>%
+    mutate(cci_category = factor(cci_category,
+                                 levels = c("<=7", "8",
+                                            "9", "10", ">=11")))
+  
+  # ── Summary table: median CCI + n and % per category within each cohort ───────
+  cci_summary2 <- cci_categorized2 %>%
+    group_by(cohort) %>%
+    mutate(
+      n_cohort   = n(),
+      median_cci = median(cci_score)
+    ) %>%
+    group_by(cohort, cci_category, n_cohort, median_cci) %>%
+    summarise(n_category = n(), .groups = "drop") %>%
+    mutate(pct = round(n_category / n_cohort * 100, 1))
+  
+  print(cci_summary2)
+  
+  # ── Median CCI per cohort ─────────────────────────────────────────────────────
+  df %>%
+    group_by(cohort) %>%
+    summarise(
+      n          = n(),
+      median_cci = median(cci_score),
+      mean_cci   = round(mean(cci_score), 2),
+      sd_cci     = round(sd(cci_score), 2),
+      .groups    = "drop"
+    )
+  
+  # ── PLOT 1: Stacked bar — % of patients in each CCI category by cohort ────────
+  category_colors <- c(
+    "None (0)"       = "#27AE60",
+    "Mild (1-2)"     = "#F39C12",
+    "Moderate (3-4)" = "#E67E22",
+    "Severe (≥5)"    = "#E74C3C"
+  )
+  
+  p_bar <- cci_summary %>%
+    ggplot(aes(x = cohort, y = pct, fill = cci_category)) +
+    geom_col(width = 0.65) +
+    geom_text(aes(label = paste0(pct, "%\n(n=", n_category, ")")),
+              position = position_stack(vjust = 0.5),
+              size = 3.2, color = "white", fontface = "bold") +
+    scale_fill_manual(values = category_colors) +
+    scale_y_continuous(labels = function(x) paste0(x, "%"),
+                       expand = expansion(mult = c(0, 0.05))) +
+    labs(
+      title = "CCI Category Distribution by Cohort",
+      x     = NULL,
+      y     = "% of Patients",
+      fill  = "CCI Category"
+    ) +
+    theme_minimal(base_size = 13) +
+    theme(
+      legend.position = "top",
+      plot.title      = element_text(face = "bold", hjust = 0.5)
+    )
+  
+  ggsave(p_bar, filename = paste0(path.out, "final_cci_stackbarplot.png"), width = 14, height = 8, dpi = 150)
+  
+  
+  # ── PLOT 2: Density curve of CCI score by cohort ──────────────────────────────
+  # Add median lines per cohort
+  cohort_medians <- df %>%
+    group_by(cohort) %>%
+    summarise(median_cci = median(cci_score), .groups = "drop")
+  
+  p_density <- df %>%
+    ggplot(aes(x = cci_score, fill = cohort, color = cohort)) +
+    geom_density(alpha = 0.35, linewidth = 0.8) +
+    geom_vline(data = cohort_medians,
+               aes(xintercept = median_cci, color = cohort),
+               linetype = "dashed", linewidth = 0.8) +
+    geom_text(data = cohort_medians,
+              aes(x = median_cci, y = Inf,
+                  label = paste0("median=", median_cci),
+                  color = cohort),
+              vjust = 1.5, hjust = -0.1, size = 3.2, show.legend = FALSE) +
+    scale_fill_manual(values  = cohort_colors) +
+    scale_color_manual(values = cohort_colors) +
+    scale_x_continuous(breaks = scales::pretty_breaks(n = 10)) +
+    labs(
+      title = "CCI Score Distribution by Cohort",
+      x     = "CCI Score (with age adjustment)",
+      y     = "Density",
+      fill  = "Cohort",
+      color = "Cohort"
+    ) +
+    theme_minimal(base_size = 13) +
+    theme(
+      legend.position = "top",
+      plot.title      = element_text(face = "bold", hjust = 0.5)
+    )
+  
+  ggsave(p_density, filename = paste0(path.out, "final_cci_density.png"), width = 14, height = 8, dpi = 150)
+  
+  
+  # ── PLOT 3: Grouped bar — n patients per category per cohort (raw counts) ──────
+  p_grouped <- cci_summary %>%
+    ggplot(aes(x = cci_category, y = n_category, fill = cohort)) +
+    geom_col(position = position_dodge(width = 0.75), width = 0.65) +
+    geom_text(aes(label = scales::comma(n_category)),
+              position = position_dodge(width = 0.75),
+              vjust = -0.4, size = 3) +
+    scale_fill_manual(values = cohort_colors) +
+    scale_y_continuous(labels = scales::comma,
+                       expand = expansion(mult = c(0, 0.1))) +
+    labs(
+      title = "Number of Patients per CCI Category by Cohort",
+      x     = "CCI Category",
+      y     = "Number of Patients",
+      fill  = "Cohort"
+    ) +
+    theme_minimal(base_size = 13) +
+    theme(
+      legend.position = "top",
+      plot.title      = element_text(face = "bold", hjust = 0.5)
+    )
+  
+  ggsave(p_grouped, filename = paste0(path.out, "final_cci_barplot.png"), width = 14, height = 8, dpi = 150)
+  
+  
+  return()
+}
+
+# ───────────────────────────────────────────────────────────────────────────────────────────────────
+# final_demographic_plot_age_func
+# plots for age for final df
+# curves and barplot for older age
+# ───────────────────────────────────────────────────────────────────────────────────────────────────
+final_demographic_plot_age_func <- function(df, path.out) {
+  cohort_colors <- c(
+    "Diabetes"  = "#E74C3C",
+    "Prostate"  = "#3498DB",
+    "Insomnia"  = "#F39C12",
+    "Healthy"   = "#27AE60"
+  )
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # PLOT 3 — age distribution within each cohort
+  # ════════════════════════════════════════════════════════════════════════════
+  p3 <- df %>%
+    distinct(cohort, person_id, age) %>%
+    ggplot(aes(x = age, fill = cohort, color = cohort)) +
+    geom_density(alpha = 0.35, linewidth = 0.8) +
+    scale_fill_manual(values  = cohort_colors) +
+    scale_color_manual(values = cohort_colors) +
+    scale_x_continuous(breaks = scales::pretty_breaks(n = 10)) +
+    labs(
+      title = "Age Distribution by Cohort",
+      x     = "Age (years)",
+      y     = "Density",
+      fill  = "Cohort",
+      color = "Cohort"
+    ) +
+    theme_minimal(base_size = 13) +
+    theme(
+      legend.position = "top",
+      plot.title      = element_text(face = "bold", hjust = 0.5)
+    )
+  ggsave(p3, filename = paste0(path.out, "final_age_curve.png"), width = 14, height = 8, dpi = 150)
+  
+  p4 <- df %>%
+    distinct(cohort, person_id, age) %>%
+    mutate(age_group = case_when(
+      age < 65              ~ "<65",
+      age >= 65 & age < 70  ~ "65-70",
+      age >= 70 & age < 75  ~ "70-75",
+      age >= 75 & age < 80  ~ "75-80",
+      age >= 80 & age < 85  ~ "80-85",
+      age >= 85 & age < 90  ~ "85-90",
+      age >= 90             ~ ">90"
+    )) %>%
+    mutate(age_group = factor(age_group, levels = c("<65", "65-70", "70-75", 
+                                                    "75-80", "80-85", "85-90", ">90"))) %>%
+    group_by(cohort, age_group) %>%
+    summarise(n_patients = n_distinct(person_id), .groups = "drop") %>%
+    ggplot(aes(x = age_group, y = n_patients, fill = cohort)) +
+    geom_col(position = position_dodge(width = 0.75), width = 0.65) +
+    scale_fill_manual(values = cohort_colors) +
+    scale_y_continuous(
+      labels = scales::comma,
+      expand = expansion(mult = c(0, 0.08))
+    ) +
+    labs(
+      title = "Number of Patients by Age Group and Cohort",
+      x     = "Age Group",
+      y     = "Number of Patients",
+      fill  = "Cohort"
+    ) +
+    theme_minimal(base_size = 13) + facet_wrap(~ cohort, scales = "free_y", nrow = 2) +
+    theme(
+      legend.position = "none",   # redundant with facet labels
+      strip.text      = element_text(face = "bold")
+    )
+  ggsave(p4, filename = paste0(path.out, "final_age_barplot.png"), width = 14, height = 8, dpi = 150)
+  
+  return()
+}
+
 
 

@@ -574,11 +574,12 @@ miss_gap_func <- function(path.out, df) {
 # filter_pid_func
 # output person_id with  longest consecutive run of missing days ≤ 14;≥ 70% compliance
 # ───────────────────────────────────────────────────────────────────────────────────────────────────
-filter_pid_func <- function(path.out, df, cohort, type){
-  eligible_ids <- df |>
+filter_pid_func <- function(path.out, df, cohort, type) {
+
+  wear_summary <- df |>
     group_by(person_id) |>
     summarise(
-      n_days        = n(),
+      n_days        = n_distinct(date),        # ✅ unique dates
       first_date    = min(date),
       last_date     = max(date),
       followup_days = as.numeric(last_date - first_date) + 1,
@@ -594,58 +595,36 @@ filter_pid_func <- function(path.out, df, cohort, type){
       missing_seq = list(setdiff(as.numeric(full_seq), as.numeric(obs_dates))),
       max_gap     = {
         m <- missing_seq
-        if (length(m) == 0) {
-          0L
-        } else {
-          run_id <- cumsum(c(1L, diff(m) != 1L))
-          max(as.integer(table(run_id)))
-        }
+        if (length(m) == 0) 0L
+        else max(as.integer(table(cumsum(c(1L, diff(m) != 1L)))))
       }
     ) |>
-    ungroup() |>
+    ungroup()
+  
+  # Inspect before filtering
+  cat("Before filter:", nrow(wear_summary), "patients\n")
+  cat("pct_wear >= 70:", sum(wear_summary$pct_wear >= 70), "\n")
+  cat("max_gap <= 14: ", sum(wear_summary$max_gap <= 14), "\n")
+  
+  eligible_ids <- wear_summary |>
     filter(
-      max_gap  <= 14,
-      pct_wear >= 70
+      pct_wear >= 70,
+      max_gap  <= 14
     ) |>
     pull(person_id)
-  write.table(eligible_ids <- df |>
-  group_by(person_id) |>
-  summarise(
-    n_days        = n(),
-    first_date    = min(date),
-    last_date     = max(date),
-    followup_days = as.numeric(last_date - first_date) + 1,
-    obs_dates     = list(sort(unique(date))),
-    .groups       = "drop"
-  ) |>
-  mutate(
-    pct_wear = (n_days / followup_days) * 100
-  ) |>
-  rowwise() |>
-  mutate(
-    full_seq    = list(seq(first_date, last_date, by = "day")),
-    missing_seq = list(setdiff(as.numeric(full_seq), as.numeric(obs_dates))),
-    max_gap     = {
-      m <- missing_seq
-      if (length(m) == 0) {
-        0L
-      } else {
-        run_id <- cumsum(c(1L, diff(m) != 1L))
-        max(as.integer(table(run_id)))
-      }
-    }
-  ) |>
-  ungroup() |>
-  filter(
-    max_gap  <= 14,
-    pct_wear >= 70
-  ) |>
-  pull(person_id))
   
-  print(length(eligible_ids))
+  cat("After filter:", length(eligible_ids), "patients\n")
   
-  write.table(eligible_ids, paste0(path.out, cohort, '_', type, '_pid_filtered.txt'), sep = '\t', quote = F, row.names = F)
+  write.table(
+    eligible_ids,
+    paste0(path.out, cohort, "_", type, "_pid_filtered.txt"),
+    sep       = "\t",
+    quote     = FALSE,
+    row.names = FALSE
+  )
   
+  return(invisible(eligible_ids))
+
 }
 
 
