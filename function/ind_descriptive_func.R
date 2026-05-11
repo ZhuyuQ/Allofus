@@ -605,11 +605,13 @@ filter_pid_func <- function(path.out, df, cohort, type) {
   cat("Before filter:", nrow(wear_summary), "patients\n")
   cat("pct_wear >= 70:", sum(wear_summary$pct_wear >= 70), "\n")
   cat("max_gap <= 14: ", sum(wear_summary$max_gap <= 14), "\n")
+  cat("nday < 21: ", sum(wear_summary$n_days < 21), "\n")
   
   eligible_ids <- wear_summary |>
     filter(
       pct_wear >= 70,
-      max_gap  <= 14
+      max_gap  <= 14,
+      n_days >= 21
     ) |>
     pull(person_id)
   

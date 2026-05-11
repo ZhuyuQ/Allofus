@@ -11,7 +11,7 @@ library(ggpubr)    # install.packages("ggpubr")
 # ───────────────────────────────────────────────────────────────────────────────────────────────────
 # ac_active_plot_func
 # get comparing for activity for each cohort
-# Violin plots; CV distribution; Mean vs SD scatter of each variable
+# Violin plots; 
 # ───────────────────────────────────────────────────────────────────────────────────────────────────
 ac_active_plot_func <- function(df, path.out) {
   cohort_colors <- c(
@@ -85,6 +85,7 @@ ac_active_plot_func <- function(df, path.out) {
   dunn_v2 <- p_v2_data |>
     dunn_test(mean_val ~ cohort, p.adjust.method = "bonferroni") |>
     add_xy_position(x = "cohort")
+  summary(p_v2_data$mean_val)
   # ── Plot ──────────────────────────────────────────────────────────────────────
   p_v2 <- ggplot(p_v2_data, aes(x = cohort, y = mean_val, fill = cohort)) +
     geom_violin(color = NA, alpha = 0.8,
@@ -104,7 +105,7 @@ ac_active_plot_func <- function(df, path.out) {
              hjust = 0, vjust = 0, size = 2.2, fontface = "italic",
              color = "gray40", label = kw_label) +
     stat_pvalue_manual(dunn_v2, label = "p.adj.signif", tip.length = 0.01,
-                       hide.ns = TRUE, size = 3, y.position = c(18000, 21000, 23000, 20000, 19000, 22000)) +
+                       hide.ns = TRUE, size = 3, y.position = c(18000, 21000, 20000, 19000, 22000)) + # c(18000, 21000, 23000, 20000, 19000, 22000)) +
     coord_cartesian(ylim = c(0, step_upper)) +
     scale_fill_manual(values = cohort_colors) +
     labs(title    = "Patient-Level Mean Daily Steps by Cohort",
