@@ -7,7 +7,12 @@ library(scales)
 library(rstatix)   # install.packages("rstatix")
 library(ggpubr)    # install.packages("ggpubr")
 
-
+cohort_colors <- c(
+  "Diabetes"  = "#E74C3C",
+  "Prostate"  = "#3498DB",
+  "Insomnia"  = "#F39C12",
+  "Healthy"   = "#27AE60"
+)
 # ───────────────────────────────────────────────────────────────────────────────────────────────────
 # ac_active_plot_func
 # get comparing for activity for each cohort
@@ -251,7 +256,7 @@ ac_sleep_plot_func <- function(df, path.out) {
     "Healthy"        = "#27AE60"
   )
   
-  # ── Plot 1: Activity minutes by cohort ───────────────────────────────────────
+  # ── Plot 1: minutes by cohort ───────────────────────────────────────
   p_v1_data <- df |>
     select(person_id, cohort,
            minute_in_bed__mean, minute_asleep__mean, minute_awake__mean, minute_deep__mean, minute_light__mean, minute_rem__mean, minute_wake__mean) |>
@@ -346,6 +351,69 @@ ac_sleep_plot_func <- function(df, path.out) {
   return()
 }
 
+
+
+# ───────────────────────────────────────────────────────────────────────────────────────────────────
+# ac_sleep_agegroup_plot_func
+# get comparing plots for sleep for each cohort within age group
+# Violin plots; 
+# ───────────────────────────────────────────────────────────────────────────────────────────────────
+ac_sleep_agegroup_plot_func <- function(df, path.out) {
+  target_cols <- c('minute_in_bed__mean', 'minute_asleep__mean', 'minute_awake__mean', 'minute_deep__mean',
+                   'minute_light__mean', 'minute_rem__mean', 'minute_wake__mean', 'sleep_efficiency__mean') 
+  
+  # 2. Iterate through each column
+  for (col_name in target_cols) {
+    print(paste("--- Processing Column:", col_name, "---"))
+    summary_tbl <- df |>
+      group_by(cohort, age_group) |>
+      summarise(
+        N      = n(),
+        Mean   = round(mean(.data[[col_name]],             na.rm = TRUE), 1),
+        SD     = round(sd(.data[[col_name]],               na.rm = TRUE), 1),
+        Median = round(median(.data[[col_name]],           na.rm = TRUE), 1),
+        Q1     = round(quantile(.data[[col_name]], 0.25,   na.rm = TRUE), 1),
+        Q3     = round(quantile(.data[[col_name]], 0.75,   na.rm = TRUE), 1),
+        .groups = "drop"
+      ) |>
+      arrange(cohort, age_group)
+    print(summary_tbl)
+    
+    formula_obj <- as.formula(paste(col_name, "~ cohort"))
+    kw_v3 <- df |>
+      group_by(age_group) |>
+      filter(n_distinct(cohort) > 1) |>
+      kruskal_test(formula_obj)
+    
+    dodge <- position_dodge(width = 0.9)
+    
+    p_age <- ggplot(df, aes(x = cohort, y = .data[[col_name]], fill = age_group)) +
+      geom_violin(color = NA, alpha = 0.8, position = dodge) +
+      geom_boxplot(width = 0.08, outlier.size = 0.3, outlier.alpha = 0.6,
+                   color = "gray30", position = dodge) +
+      geom_text(data = kw_v3,
+                aes(x = 3.8, y = Inf,
+                    label = paste0("KW p", ifelse(p < 0.001, "<0.001",
+                                                  paste0("=", round(p, 3))),
+                                   " (", age_group, ")")),
+                inherit.aes = FALSE,
+                vjust = seq(1.5, 4, length.out = nrow(kw_v3)),
+                size = 2.8, fontface = "italic") +
+      scale_fill_manual(values = c("18-44" = "#E91E8C",
+                                   "45-64"   = "#3498DB",
+                                   ">=65"  = "#95A5A6")) +
+      labs(
+        subtitle = "Kruskal-Wallis test between cohorts within each age group",
+        x = NULL, y = col_name, fill = "Age group") +
+      theme_bw(base_size = 11) +
+      theme(axis.text.x     = element_text(angle = 30, hjust = 1),
+            legend.position = "bottom")
+    
+    ggsave(p_age, filename = paste0(path.out, "sleep_", col_name, "_violin_age.png"), width = 7, height = 6, dpi = 150)
+    return();
+
+  }
+}
 # ───────────────────────────────────────────────────────────────────────────────────────────────────
 # final_demographic_plot_condition_func
 # plots for conditions for final df
