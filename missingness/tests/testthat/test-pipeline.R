@@ -178,13 +178,30 @@ test_that("results accumulate across calls: gap-length models, sensitivity files
   expect_equal(r2$primary_test$estimate, r1$primary_test$estimate)
 })
 
-test_that("descriptive-only runs write a results summary, an empty failure table and no model checkpoints", {
+test_that("descriptive-only runs write no results summary, an empty failure table and no model checkpoints", {
   cfg <- cfg_test()
   inp <- suppressMessages(simulate_inputs(cfg, n_per_cohort = c(Insomnia = 20, Diabetes = 20, Healthy = 40, Prostate = 10), seed = 5))
   out <- tempfile(); res <- NULL
   invisible(suppressWarnings(suppressMessages(capture.output(
     res <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, out, stages = c("missingness", "temporal"))))))
-  expect_true(file.exists(file.path(out, "results_summary.md")))
+  expect_false(file.exists(file.path(out, "results_summary.md")))        # no model ran: nothing to summarise
   expect_equal(nrow(res$unit_failures), 0L); expect_equal(nrow(res$checkpoint_status), 0L)
   expect_false(file.exists(file.path(out, "tables", "unit_failures.tsv")))
+})
+
+test_that("the 'missing_figures' stage redraws the missingness summaries only: no models, no checkpoints, other results untouched", {
+  cfg <- cfg_test()
+  inp <- suppressMessages(simulate_inputs(cfg, n_per_cohort = c(Insomnia = 40, Diabetes = 40, Healthy = 80, Prostate = 20), seed = 5))
+  out <- tempfile(); dir.create(out); writeLines("sentinel", file.path(out, "results_summary.md"))
+  res <- NULL
+  invisible(suppressWarnings(suppressMessages(capture.output(
+    res <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, out, stages = "missing_figures")))))
+  expect_true(all(file.exists(file.path(out, "figures", paste0(c("missing_by_study_week", "missing_by_year", "missing_by_weekday", "missing_by_age",
+         "missing_pct_by_sex", "missing_pct_by_age_group", "missing_pct_by_race_plot", "missing_pct_by_cci_group"), ".png")))))
+  expect_true(all(file.exists(file.path(out, "tables", c("missing_pct_by_stratum.tsv", "missing_pct_by_stratum_tests.tsv", "missing_pct_by_stratum_models.tsv", "study_week_rates.tsv",
+                                                          "missing_trend_tests.tsv", "missing_trend_heterogeneity.tsv", "missing_weekday_tests.tsv", "missing_weekday_odds_ratios.tsv")))))
+  expect_false(dir.exists(file.path(out, "checkpoints")))                                   # no model was touched
+  expect_equal(readLines(file.path(out, "results_summary.md")), "sentinel")                  # results summary not overwritten
+  expect_false(any(c("transition", "weekday_tests", "metric_summary", "onset_coefficients") %in% names(res)))
+  expect_match(paste(readLines(file.path(out, "figures", "figure_captions.md")), collapse = " "), "5-year moving window")
 })

@@ -120,6 +120,24 @@ skipped (a stream whose models are all finished is not even read); only missing,
 
 ## Figures (from the saved result tables; no model is refitted)
 
+`stages = "missing_figures"` redraws only the missingness-summary figures above and writes their statistics tables (about 1-2 minutes at
+full size, no models, no checkpoints, nothing else is rewritten). Statistics saved next to the figures (`results/tables/`):
+
+| table | content |
+|---|---|
+| `missing_pct_by_stratum` | N, mean, SD, median, quartiles, P5, P95 of the person-level % missing by cohort x level of sex / age group / race / CCI group |
+| `missing_pct_by_stratum_tests` | Kruskal-Wallis (>= 3 groups) or Wilcoxon (2 groups) between the levels within each cohort, and between cohorts within each level; statistic, df, p, Holm p, epsilon-squared / Cliff's delta |
+| `missing_pct_by_stratum_models` | quasi-binomial odds ratios of a day being missing, level vs reference, within each cohort (95% CI, dispersion, omnibus F test and its Holm p) |
+| `missing_trend_tests` | trend of the missing share with study week (per 4 weeks), calendar year and age (per 10 years): odds ratio per unit with 95% CI, robust z test, per cohort (Holm) and for all cohorts |
+| `missing_trend_heterogeneity` | Wald chi-square test that the trend differs between cohorts |
+| `missing_weekday_tests`, `missing_weekday_odds_ratios` | Wald chi-square tests of the weekday effect (per cohort, all cohorts) and of weekday x cohort; odds ratios of each weekday vs Sunday per cohort |
+
+The trend and weekday models are pooled logistic regressions of the person x week / year / age / weekday counts with person-clustered
+(sandwich) standard errors; the trend is linear on the logit scale. Estimate figures (forest plots, predicted probabilities, transition) draw one
+box per estimate (line = estimate, box = central 50% interval, whiskers = 95% interval; the uncertainty of the estimate, not the spread of the data;
+`cfg$plot$interval_style = "se"` draws one dot +/- 1 SD, `"ci95"` one dot with the 95% interval). Violin figures with
+more than 12 violins in total (violins per panel x panels) put their panels in 2 rows (13-24) or 3 rows (more) with a matching image size.
+
 | figure | shows |
 |---|---|
 | `onset_primary_forest` | primary model: OR of a gap tomorrow per 1 SD below usual, each prior-day predictor, with 95% CI and gap/people counts |
@@ -129,7 +147,9 @@ skipped (a stream whose models are all finished is not even read); only missing,
 | `forest_sensitivity` | primary effect under the sensitivity assumptions (comparable estimates only; LRTs are in `sensitivity.tsv`) |
 | `gap_dose_response` | model B: fitted activity after the gap vs gap length (log2 axis, 95% CI) against observed group means (clustered 95% CI, n shown) |
 | `gap_length_probs` | model C: population-average probability of each length group at 1 SD below / usual / above, with 95% CI (only where proportional odds held) |
-| descriptive / temporal figures | as before (violins, ECDF, gap-length distribution, transition, week / year / weekday, heatmaps) |
+| `missing_pct_by_sex` / `_age_group` / `_race_plot` / `_cci_group` | person-level % missing by cohort within the groups of one stratum (dodged violins + box, one panel per stream); label = test between the groups within each cohort (Kruskal-Wallis, Wilcoxon for two groups), Holm-adjusted over cohorts; effect sizes in `missing_pct_by_stratum_tests.tsv` |
+| `missing_by_study_week` / `_year` / `_weekday` / `_age` | pooled missing share per cohort, one line + shaded 95% bootstrap band each (same configuration for all four); age is continuous (5-year moving window) |
+| other descriptive / temporal figures | as before (violins, ECDF, gap-length distribution, transition, heatmaps) |
 
 Odds ratios are never presented as risk ratios, the curves and probabilities are marginal (population-average,
 stated in each caption), and all associations are non-causal.

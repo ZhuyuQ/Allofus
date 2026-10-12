@@ -98,7 +98,8 @@ rm(etl, store, hr); invisible(gc())                  # the day tables are saved 
 
 # ==== CELL 10
 inp <- load_inputs(cfg, L1_DIR)                      # nothing big is read: each stream is read when a stage needs it
-print(inp$day_tables); print(nrow(inp$persons))
+print(data.frame(file = basename(inp$day_tables$paths), MB = round(file.size(inp$day_tables$paths) / 1e6, 1)))
+cat("people:", nrow(inp$persons), "\n")
 
 # ==== CELL 10b   (optional: memory right now)
 cat(sprintf("this R session: %.1f GB | free: %.1f GB | a model may use up to: %.1f GB\n",
@@ -109,6 +110,17 @@ res <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, OUT_DIR,
                                 stages = c("missingness", "temporal", "descriptive"))
 print(res$cohort_missingness)
 print(res$selection_check)
+
+# ==== CELL 11b   (optional, ~1-2 min: redraws ONLY the missingness-summary figures; no models, nothing else is rerun)
+# missing % by sex / age group / race / CCI group, the gap ECDF, and missing share by study week, year, weekday and age;
+# the statistics behind them are saved in results/tables (missing_pct_by_stratum_tests / _models, missing_trend_tests,
+# missing_trend_heterogeneity, missing_weekday_tests, missing_weekday_odds_ratios)
+res <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, OUT_DIR, stages = "missing_figures")
+print(res$missing_pct_by_stratum_tests[family == "groups_within_cohort" & test != "none",
+      .(stream, stratum_var, cohort = group, test, n_total, statistic = round(statistic, 2), df, p = signif(p, 3),
+        p_holm = signif(p_holm, 3), effect = round(effect, 3), effect_name)])
+print(res$missing_trend_tests[, .(stream, variable, cohort, unit, or = round(odds_ratio, 3), or_low = round(or_low, 3), or_high = round(or_high, 3),
+      p = signif(p, 3), p_holm = signif(p_holm, 3), status)])
 
 # ==== CELL 12
 res <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, OUT_DIR, stages = "onset",

@@ -159,7 +159,8 @@ make_config <- function(overrides = list()) {
     # ---- strata used in descriptive plots ------------------------------------
     strata = list(
       age_breaks = c(-Inf, 44, 64, Inf), age_labels = c("18-44", "45-64", ">=65"),
-      cci_breaks = c(-Inf, 0, 2, 4, Inf), cci_labels = c("0", "1-2", "3-4", ">=5")
+      cci_breaks = c(-Inf, 0, 2, 4, Inf), cci_labels = c("0", "1-2", "3-4", ">=5"),
+      age_half_width = 2L   # "missing by age" figure: each age pools the days at age -2 ... +2 years (a 5-year moving window)
     ),
     suppress_n_lt = 0L,      # small-cell suppression OFF (set to 20 to turn on)
 
@@ -174,7 +175,8 @@ make_config <- function(overrides = list()) {
                     Asian = "#27AE60", `More than one population` = "#8E44AD",
                     Other = "#95A5A6")
     ),
-    plot = list(dpi = 150)
+    plot = list(dpi = 150,
+                interval_style = "box")   # estimates with intervals: "box" = line + 50% box + 95% whiskers; "se" = dot +/- 1 SD (standard error); "ci95" = dot + 95% interval
   )
   utils::modifyList(cfg, overrides)
 }

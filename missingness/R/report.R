@@ -52,12 +52,15 @@ write_run_metadata <- function(cfg, outdir, store = NULL, extra = list()) {
 
 # ---- execution summary: what is done, what failed, what was skipped ---------------------------------------
 
-# One line per figure: file name + what it shows and how to read it.
-write_figure_captions <- function(names, outdir) {
+# One line per figure PRESENT in <outdir>/figures (not only the ones made in this call): file name + what it
+# shows and how to read it.
+write_figure_captions <- function(names = NULL, outdir) {
+  fdir <- file.path(outdir, "figures")
+  dir.create(fdir, recursive = TRUE, showWarnings = FALSE)
+  names <- sort(unique(c(names, tools::file_path_sans_ext(list.files(fdir, pattern = "\\.png$")))))
   cap <- vapply(names, caption_for, character(1))
-  dir.create(file.path(outdir, "figures"), recursive = TRUE, showWarnings = FALSE)
   writeLines(c("# Figure captions", "", paste0("* **", names, ".png** - ", ifelse(is.na(cap), "(no caption)", cap))),
-             file.path(outdir, "figures", "figure_captions.md"))
+             file.path(fdir, "figure_captions.md"))
   invisible(cap)
 }
 
