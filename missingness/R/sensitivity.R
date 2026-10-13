@@ -19,7 +19,9 @@
 # (The stricter gap definitions k = 2, 3, 7 are model D, in the onset grid.)
 # ==============================================================================
 
-# One-row summary of the primary term from a fit_onset_spec() result.
+# Rows of one sensitivity analysis: the tested term (`tested = TRUE`) AND every other within-person
+# term of the same model (`w_` / `tw_`), so one analysis can be drawn for all the stream's predictors.
+# The tested term alone is what `sensitivity.tsv` reports; the full set is `sensitivity_all_terms.tsv`.
 extract_term_row <- function(res, analysis, which_term) {
   info <- res$info
   if (is.null(res$coef)) {
@@ -27,25 +29,25 @@ extract_term_row <- function(res, analysis, which_term) {
                       conf_low = NA_real_, conf_high = NA_real_, p = NA_real_,
                       or = NA_real_, or_low = NA_real_, or_high = NA_real_,
                       n_events = info$n_events, n_persons_event = info$n_persons_event,
-                      status = info$status, note = info$note))
+                      status = info$status, note = info$note, tested = TRUE))
   }
-  row <- res$coef[term == which_term]
-  row[, .(analysis = analysis, term, estimate, se, conf_low, conf_high, p, or, or_low, or_high,
-          n_events, n_persons_event, status = info$status, note = info$note)]
+  rows <- res$coef[grepl("^t?w_", term) | term == which_term]
+  rows[, .(analysis = analysis, term, estimate, se, conf_low, conf_high, p, or, or_low, or_high,
+           n_events, n_persons_event, status = info$status, note = info$note, tested = term == which_term)]
 }
 
 # Same, for an estimator that returns its own coefficient table.
 term_row_from_table <- function(tab, analysis, which_term, ec, status = "ok", note = "") {
-  row <- tab[term == which_term]
-  if (nrow(row) == 0L) {
+  if (nrow(tab[term == which_term]) == 0L) {
     return(data.table(analysis = analysis, term = which_term, estimate = NA_real_, se = NA_real_,
                       conf_low = NA_real_, conf_high = NA_real_, p = NA_real_, or = NA_real_,
                       or_low = NA_real_, or_high = NA_real_, n_events = ec$n_events,
-                      n_persons_event = ec$n_persons_event, status = "term_missing", note = note))
+                      n_persons_event = ec$n_persons_event, status = "term_missing", note = note, tested = TRUE))
   }
-  row <- add_odds_ratios(copy(row))
-  row[, .(analysis = analysis, term, estimate, se, conf_low, conf_high, p, or, or_low, or_high,
-          n_events = ec$n_events, n_persons_event = ec$n_persons_event, status = status, note = note)]
+  rows <- add_odds_ratios(copy(tab[grepl("^t?w_", term) | term == which_term]))
+  rows[, .(analysis = analysis, term, estimate, se, conf_low, conf_high, p, or, or_low, or_high,
+           n_events = ec$n_events, n_persons_event = ec$n_persons_event, status = status, note = note,
+           tested = term == which_term)]
 }
 
 # ---- alternative estimators on the same model data ----------------------------------------
@@ -116,7 +118,7 @@ not_estimable_row <- function(analysis, term, ec) {
   data.table(analysis = analysis, term = term, estimate = NA_real_, se = NA_real_, conf_low = NA_real_,
              conf_high = NA_real_, p = NA_real_, or = NA_real_, or_low = NA_real_, or_high = NA_real_,
              n_events = ec$n_events, n_persons_event = ec$n_persons_event,
-             status = "not_estimable", note = "too few events")
+             status = "not_estimable", note = "too few events", tested = TRUE)
 }
 
 # A likelihood-ratio test reported in the same row layout (the test is in `p`).
@@ -124,8 +126,12 @@ lrt_row <- function(analysis, term, ec, t, meaning) {
   data.table(analysis = analysis, term = term, estimate = NA_real_, se = NA_real_, conf_low = NA_real_,
              conf_high = NA_real_, p = t$p, or = NA_real_, or_low = NA_real_, or_high = NA_real_,
              n_events = ec$n_events, n_persons_event = ec$n_persons_event, status = "ok",
-             note = sprintf("LRT chisq=%.2f, df=%d (%s)", t$chisq, t$df, meaning))
+             note = sprintf("LRT chisq=%.2f, df=%d (%s)", t$chisq, t$df, meaning), tested = TRUE)
 }
+
+# Version of the stored sensitivity rows (2: every within-person term is kept, not only the tested one).
+# It is part of the checkpoint key, so rows stored by an older version are recomputed, never mixed in.
+SENSITIVITY_SCHEMA <- 2L
 
 # The sensitivity analyses of the PRIMARY spec of one stream, each an independent checkpointed unit
 # (so a failed or slow analysis never costs the others).
@@ -138,7 +144,7 @@ run_sensitivity_stage <- function(s, bundle, alt, prim, cfg, ckpt_dir, dkey, ter
   status <- character()
   unit <- function(id, compute, spec_extra = NULL) {
     u <- run_unit(ckpt_dir, list(kind = "sensitivity", stream = s, id = id),
-                  ckpt_key(cfg, "sensitivity", dkey, c(spec_key(prim), spec_extra), cfg$model$sample_persons),
+                  ckpt_key(cfg, "sensitivity", dkey, c(spec_key(prim), spec_extra, list(schema = SENSITIVITY_SCHEMA)), cfg$model$sample_persons),
                   compute, cfg)
     status[id] <<- u$status
   }
@@ -188,7 +194,11 @@ run_sensitivity_stage <- function(s, bundle, alt, prim, cfg, ckpt_dir, dkey, ter
 collect_sensitivity_results <- function(ckpt_dir, cfg, data_keys) {
   cu <- collect_units(ckpt_dir, "sensitivity", cfg, data_keys)
   tab <- rbindlist(Map(function(v, st) cbind(stream = st, v), cu$values, cu$units$stream), fill = TRUE)
-  list(sensitivity = tab, sensitivity_failures = cu$failures)
+  if (nrow(tab) == 0L) return(list(sensitivity = tab, sensitivity_all_terms = tab, sensitivity_failures = cu$failures))
+  # `sensitivity`: the tested term of every analysis (as before); `sensitivity_all_terms`: all within-person terms
+  list(sensitivity = tab[tested %in% TRUE][, tested := NULL][],
+       sensitivity_all_terms = tab[!analysis %in% c("spline_vs_linear", "random_slope")][, tested := NULL][],   # estimates only (the other two are tests)
+       sensitivity_failures = cu$failures)
 }
 
 # ---- engine check -----------------------------------------------------------------------------------

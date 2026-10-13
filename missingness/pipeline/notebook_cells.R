@@ -122,7 +122,8 @@ print(res$missing_pct_by_stratum_tests[family == "groups_within_cohort" & test !
 print(res$missing_trend_tests[, .(stream, variable, cohort, unit, or = round(odds_ratio, 3), or_low = round(or_low, 3), or_high = round(or_high, 3),
       p = signif(p, 3), p_holm = signif(p_holm, 3), status)])
 
-# ==== CELL 12
+# ==== CELL 12   (Cells 12-14: onset models; new figures per stream: onset_forest_year_<stream> + onset_forest_other_<stream> = all predictors in two plots, onset_deciles_<stream> = observed gap rate by decile.
+#                 Finished models are skipped; only the small "deciles" unit is computed on the first run after the update)
 res <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, OUT_DIR, stages = "onset",
                                 onset_roles = c("primary", "secondary_threshold"),
                                 model_streams = "activity")
@@ -141,6 +142,8 @@ res <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, OUT_DIR, stage
 print(res$primary_test)
 
 # ==== CELL 15
+# New figures: gapB_forest_<stream> and gapC_forest_<stream> (all predictors of each model). They need every coefficient, so models
+# B and C saved by an older version of the code are refitted ONCE (checkpoint schema 2); model C is the slow one.
 # Models B and C: 6 independent units per stream (4 x B, 2 x C), each saved on its own. They are built from
 # the gaps and one activity predictor only (no person-day table), so they need little memory.
 res <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, OUT_DIR, stages = "gap_models",
@@ -150,7 +153,8 @@ print(res$model_C_gap_length[, .(stream, model_id, or = round(or, 2), po_p = sig
 cat("failed units:", nrow(res$unit_failures), "\n")      # 0 = nothing failed; otherwise run this cell again to retry them
 if (nrow(res$unit_failures) > 0L) print(res$unit_failures)
 
-# ==== CELL 16
+# ==== CELL 16   (new figure per stream: sensitivity_forest_<stream> = every within-person predictor under every analysis; sensitivity units
+#                saved by an older version of the code are refitted ONCE (checkpoint schema 2) - this is the long cell)
 res <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, OUT_DIR, stages = "sensitivity",
                                 model_streams = c("activity", "sleep", "hr"))
 print(res$sensitivity[, .(stream, analysis, term, or = round(or, 2), p = signif(p, 3), status)])

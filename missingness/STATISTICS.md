@@ -219,10 +219,14 @@ adjusted (`role = exploratory`); **primary** = joint predictors, adjusted, k = 1
   comes from 2,000 draws of (`b0`, `b1`) from their joint normal distribution; `sigma2` is held fixed, so it reflects
   intercept and slope uncertainty only.
 
+Note: in every adjusted model `cohort` is coded with **Healthy as the reference** (`cfg$reference_cohort`; changing it makes all stored model results stale).
+
 ## 6. Sensitivity analyses of the primary effect [`sensitivity.R`]
 
 Same question (does a lower-than-usual prior day raise the odds of a gap?) under different assumptions; one row per analysis
-in `sensitivity`, with `estimate, se, conf_low, conf_high, p, or, or_low, or_high`:
+in `sensitivity`, with `estimate, se, conf_low, conf_high, p, or, or_low, or_high`. The same fits also store the estimates of **every**
+within-person predictor of the model (`w_` / `tw_` terms, not only the tested one) in `sensitivity_all_terms`; these are what the
+per-stream forest plot `sensitivity_forest_<stream>` draws (the spline and random-slope analyses are tests and are not in that table):
 
 | analysis | what changes |
 |---|---|
@@ -282,13 +286,13 @@ sample of 500 gaps' covariate profiles and over the random intercept), with 95% 
 | week / year / weekday shares | pooled missing % (+ bootstrap CI) | none | `study_week_rates`, `calendar_year_rates`, `weekday_rates` |
 | weekday effect | OR vs Sunday (Wald CI) | LRT `chisq`, `df`, `p` (weekday; weekday x cohort) | `weekday_odds_ratios`, `weekday_tests` |
 | metric values by cohort / stratum | median, mean, SD, quartiles | none in tables (KW p in figures) | `metric_summary*` |
-| gap onset (all specs) | `or` per SD below usual (+ CI), `estimate` = log-odds | Wald z = `estimate / se`, `p`; primary: `p_holm` | `onset_coefficients`, `primary_test` |
+| gap onset (all specs) | `or` per SD below usual (+ CI), `estimate` = log-odds | Wald z = `estimate / se`, `p`; primary: `p_holm` | `onset_coefficients` (every fixed effect), `primary_test`; `onset_deciles` = observed gap rate by decile of the primary term |
 | onset heterogeneity | `sigma2`, `mor` | - | `onset_models` |
 | cohort difference in the primary effect | per-cohort OR | LRT `chisq`, `df`, `p` | `cohort_specific`, `cohort_interaction` |
 | absolute risk | % risk at -1, 0, +1 SD (+ interval) | - | `risk_unadjusted` |
-| sensitivity | OR per estimator | Wald `p`; LRT `p` for spline / random slope | `sensitivity` |
-| model B | change per doubling of gap length (SD units) | normal-approximation `p` | `model_B_post_gap_activity` (+ `model_B_curve`, `model_B_observed`) |
-| model C | OR of a longer gap per SD below usual; predicted probabilities | Wald `p`; proportional-odds LRT `po_p` | `model_C_gap_length`, `model_C_predicted_probs` |
+| sensitivity | OR per estimator | Wald `p`; LRT `p` for spline / random slope | `sensitivity`, `sensitivity_all_terms` |
+| model B | change per doubling of gap length (SD units) | normal-approximation `p` | `model_B_post_gap_activity` (+ `model_B_curve`, `model_B_observed`, `model_B_all_terms` = every fixed effect) |
+| model C | OR of a longer gap per SD below usual; predicted probabilities | Wald `p`; proportional-odds LRT `po_p` | `model_C_gap_length`, `model_C_predicted_probs`, `model_C_all_terms` = every coefficient |
 
 ## 9. Multiplicity, assumptions and what the results can and cannot say
 

@@ -133,14 +133,16 @@ full size, no models, no checkpoints, nothing else is rewritten). Statistics sav
 | `missing_weekday_tests`, `missing_weekday_odds_ratios` | Wald chi-square tests of the weekday effect (per cohort, all cohorts) and of weekday x cohort; odds ratios of each weekday vs Sunday per cohort |
 
 The trend and weekday models are pooled logistic regressions of the person x week / year / age / weekday counts with person-clustered
-(sandwich) standard errors; the trend is linear on the logit scale. Estimate figures (forest plots, predicted probabilities, transition) draw one
-box per estimate (line = estimate, box = central 50% interval, whiskers = 95% interval; the uncertainty of the estimate, not the spread of the data;
-`cfg$plot$interval_style = "se"` draws one dot +/- 1 SD, `"ci95"` one dot with the 95% interval). Violin figures with
+(sandwich) standard errors; the trend is linear on the logit scale. Estimate figures from the models (forest plots, predicted probabilities) draw one dot +/- 1 SD of the estimate (its standard error; `cfg$plot$interval_style = "ci95"` draws the 95% interval, `"box"` one box per estimate: line = estimate, box = central 50% interval, whiskers = 95% interval; the uncertainty of the estimate, not the spread of the data). The cohort transition figure keeps its own setting, `cfg$plot$transition_style` (default `"box"`). Violin figures with
 more than 12 violins in total (violins per panel x panels) put their panels in 2 rows (13-24) or 3 rows (more) with a matching image size.
 
 | figure | shows |
 |---|---|
 | `onset_primary_forest` | primary model: OR of a gap tomorrow per 1 SD below usual, each prior-day predictor, with 95% CI and gap/people counts |
+| `onset_forest_year_<stream>` / `onset_forest_other_<stream>` | gap-onset model of that stream (primary, joint, adjusted), all predictors in two forest plots: part 1 = the calendar-year terms (each year against the first year), part 2 = everything else (within-person terms, between-person terms, covariates, gap history; cohorts against Healthy) |
+| `onset_deciles_<stream>` | extra figure per stream: observed (model-free) % of days followed by a gap by decile of yesterday's within-person steps, one line per cohort (table `onset_deciles.tsv`) |
+| `sensitivity_forest_<stream>` | every within-person predictor under every sensitivity analysis (one panel per predictor; table `sensitivity_all_terms.tsv`) |
+| `gapB_forest_<stream>` / `gapC_forest_<stream>` | models B and C: every coefficient of each specification (tables `model_B_all_terms.tsv`, `model_C_all_terms.tsv`) |
 | `forest_gap_definition` | the primary effect for gaps >= 1, 2, 3, 7 days (model D) |
 | `risk_curve` | population-average % chance of a gap tomorrow at 1 SD below / usual / above (95% interval from intercept + slope) |
 | `cohort_forest` | the primary effect per cohort + LRT for a cohort difference; cohorts that could not be estimated are named |

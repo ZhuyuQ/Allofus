@@ -249,7 +249,19 @@ run_missingness_pipeline <- function(day_tables, persons, cfg, outdir,
       fig("onset_primary_forest", plot_onset_forest(res$onset_coefficients, cfg), 8, 7)
       d_tab <- res$onset_coefficients[role %in% c("primary", "secondary_threshold") & term == cfg$primary_term,
                                       .(stream, label = paste0("gap >= ", k, " day", ifelse(k > 1, "s", "")), or, or_low, or_high)]
-      if (nrow(d_tab) > 0L) fig("forest_gap_definition", plot_forest(d_tab, "Odds of a Gap Starting Tomorrow per 1 SD Below Usual Steps, by Gap Definition", group_col = "stream", style = cfg$plot$interval_style), 10, 5)
+      if (nrow(d_tab) > 0L) fig("forest_gap_definition", plot_forest(d_tab, "Odds of a Gap Starting Tomorrow per 1 SD Below Usual Steps, by Gap Definition", group_col = "stream", style = cfg$plot$interval_style %||% "se"), 10, 5)
+    }
+    for (s in model_streams) {                    # one forest plot of ALL predictors, and one observed-rate figure, per stream
+      if (!is.null(res$onset_coefficients) && nrow(res$onset_coefficients) > 0L) {
+        for (pt in c("year", "other")) {          # part 1: calendar years, part 2: everything else
+          p <- plot_onset_forest_all(res$onset_coefficients, s, cfg, part = pt)
+          if (!is.null(p)) fig(paste0("onset_forest_", pt, "_", s), p)
+        }
+      }
+      if (!is.null(res$onset_deciles) && nrow(res$onset_deciles) > 0L) {
+        p <- plot_onset_deciles(res$onset_deciles, s, cfg)
+        if (!is.null(p)) fig(paste0("onset_deciles_", s), p, 8, 5)
+      }
     }
     if (!is.null(res$risk_unadjusted) && "risk" %in% names(res$risk_unadjusted)) fig("risk_curve", plot_risk_curve(res$risk_unadjusted, cfg), 7, 9)
     if (nrow(res$cohort_specific) > 0L) fig("cohort_forest", plot_cohort_forest(res$cohort_specific, res$cohort_interaction, cfg), 10, 5)
@@ -270,6 +282,14 @@ run_missingness_pipeline <- function(day_tables, persons, cfg, outdir,
     res <- c(res, collect_gap_results(ckpt, cfg, dkeys))
     if (nrow(res$model_B_curve) > 0L) fig("gap_dose_response", plot_gap_dose_response(res$model_B_curve, res$model_B_observed, cfg), 8, 9)
     if (nrow(res$model_C_predicted_probs) > 0L) fig("gap_length_probs", plot_ordinal_probs(res$model_C_predicted_probs, cfg), 10, 4.5)
+    for (s in model_streams) {                    # one forest plot of ALL predictors per model and stream
+      if (!is.null(res$model_B_all_terms) && nrow(res$model_B_all_terms) > 0L) {
+        p <- plot_gapB_forest(res$model_B_all_terms, s, cfg); if (!is.null(p)) fig(paste0("gapB_forest_", s), p)
+      }
+      if (!is.null(res$model_C_all_terms) && nrow(res$model_C_all_terms) > 0L) {
+        p <- plot_gapC_forest(res$model_C_all_terms, s, cfg); if (!is.null(p)) fig(paste0("gapC_forest_", s), p)
+      }
+    }
   }
 
   # ---- 7. sensitivity analyses of the primary model ----
@@ -288,7 +308,13 @@ run_missingness_pipeline <- function(day_tables, persons, cfg, outdir,
     if (nrow(res$sensitivity) > 0L) {
       ord <- c("main", "trailing_baseline", "exclude_partial_wear", "first_gap_only", "main_sleep_only", "conditional_logit", "cluster_robust_logit")
       f_tab <- res$sensitivity[!is.na(or), .(stream, label = analysis, or, or_low, or_high)][order(match(label, ord))]
-      if (nrow(f_tab) > 0L) fig("forest_sensitivity", plot_forest(f_tab, "Primary Effect Under Different Assumptions", group_col = "stream", style = cfg$plot$interval_style), 10, 5)
+      if (nrow(f_tab) > 0L) fig("forest_sensitivity", plot_forest(f_tab, "Primary Effect Under Different Assumptions", group_col = "stream", style = cfg$plot$interval_style %||% "se"), 10, 5)
+    }
+    if (nrow(res$sensitivity_all_terms) > 0L) {
+      for (s in model_streams) {                  # every within-person predictor under every analysis, per stream
+        p <- plot_sensitivity_forest_stream(res$sensitivity_all_terms, s, cfg)
+        if (!is.null(p)) fig(paste0("sensitivity_forest_", s), p)
+      }
     }
   }
 
@@ -301,7 +327,7 @@ run_missingness_pipeline <- function(day_tables, persons, cfg, outdir,
     print(res$unit_failures)
   }
   write_tables(res, outdir)
-  if (length(figs)) write_figure_captions(figs, outdir)
+  if (length(figs)) write_figure_captions(figs, outdir, cfg)
   if (any(c("onset", "gap_models", "sensitivity") %in% stages)) write_results_summary(res, cfg, outdir)   # model results only
   if (!identical(stages, "missing_figures")) write_run_metadata(cfg, outdir, store, extra = list(stages = stages, onset_roles = onset_roles))
   invisible(res)

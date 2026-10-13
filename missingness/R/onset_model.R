@@ -382,6 +382,28 @@ vif_table <- function(dat, cols) {
 spec_key <- function(g_row) list(stream = g_row$stream, set_name = g_row$set_name, predictors = g_row$predictors[[1L]],
                                  k = g_row$k, adjusted = g_row$adjusted, role = g_row$role)
 
+# Observed (model-free) gap rate by decile of yesterday's within-person z-score of the primary term, within each cohort:
+# deciles are cut over all rows at risk, so a decile holds the same days in every cohort. For each decile and cohort: mean z,
+# rows, gaps that started, people, the rate and its 95% interval that respects several days per person (ratio estimator,
+# person-clustered sandwich variance; see cluster_mean_ci). Unadjusted: it shows the shape of the association that the
+# odds ratio summarises, not the adjusted effect.
+onset_deciles <- function(bundle, cfg, k = cfg$onset$primary_k, term = cfg$primary_term, n_bins = 10L) {
+  ycol <- paste0("y_ge", k)
+  rs <- bundle$rs[, c("person_id", "cohort", term, ycol), with = FALSE]
+  setnames(rs, c(term, ycol), c("z", "y"))
+  rs <- rs[!is.na(z) & !is.na(y)]
+  if (nrow(rs) == 0L) return(data.table())
+  br <- unique(stats::quantile(rs$z, probs = seq(0, 1, length.out = n_bins + 1L), names = FALSE))
+  if (length(br) < 3L) return(data.table())
+  rs[, decile := findInterval(z, br, rightmost.closed = TRUE, all.inside = TRUE)]
+  out <- rs[, {
+    ci <- cluster_mean_ci(y, person_id)
+    .(mean_z = mean(z), n_rows = .N, n_events = sum(y), n_persons = ci$n_persons,
+      rate = ci$mean, rate_low = max(0, ci$lo), rate_high = min(1, ci$hi))
+  }, by = .(cohort, decile)]
+  out[order(cohort, decile)][]
+}
+
 # Fit (or resume) every spec of the grid for one stream, plus the per-stream extras. Each model is
 # one unit with its own checkpoint, so a crash or a failed model never costs the others.
 #   s      : the stream name
@@ -416,6 +438,8 @@ run_onset_stage <- function(s, bundle, grid, cfg, ckpt_dir, dkey) {
         if (is.null(r$coef)) cbind(r$info, term = cfg$primary_term) else r$coef[term == cfg$primary_term]
       }, spec_key(prim))
     }
+    # observed gap rate by decile of the primary term: a model-free check of the odds ratio (one extra figure per stream)
+    extra("deciles", function() cbind(stream = s, onset_deciles(bundle$get(), cfg, k = prim$k)), c(spec_key(prim), list(schema = 2L)))
     # the absolute-risk curve comes from the unadjusted joint model, whatever roles this call fits
     unadj <- make_onset_grid(cfg)[stream == s & set_name == "joint" & k == cfg$onset$primary_k & !adjusted][, role := "risk_curve"]
     if (nrow(unadj) == 1L) {
@@ -440,6 +464,7 @@ collect_onset_results <- function(ckpt_dir, cfg, data_keys) {
               onset_models       = rbindlist(lapply(sp$values, `[[`, "info"), fill = TRUE),
               vif = pick("vif"), cohort_interaction = pick("cohort_interaction"),
               cohort_specific = pick(paste0("cohort_", cfg$cohorts)), risk_unadjusted = pick("risk_unadjusted"),
+              onset_deciles = pick("deciles"),
               onset_failures = rbindlist(list(sp$failures, ex$failures), fill = TRUE))
   prim <- if (nrow(out$onset_coefficients) > 0L) out$onset_coefficients[role == "primary" & term == cfg$primary_term]
           else out$onset_coefficients

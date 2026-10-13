@@ -49,13 +49,15 @@ save_plot <- function(p, path, width = 7, height = 5, cfg = make_config()) {
 
 # ---- intervals of ESTIMATES: box-and-whisker style ------------------------------------------------------------------
 #
-# Every figure that shows an estimate with its uncertainty (forest plots, cohort estimates, predicted probabilities,
-# transition probabilities) draws ONE BOX PER ESTIMATE:
+# Every figure that shows an estimate with its uncertainty can be drawn in three styles (cfg$plot$interval_style):
+#   "se"   (default for the MODEL figures) one dot and +/- 1 SD of the estimate (its standard error)
+#   "ci95" one dot and the 95% interval
+#   "box"  ONE BOX PER ESTIMATE:
 #     line in the box = the estimate     box = the central 50% interval     whiskers = the 95% interval
 # The box is NOT the distribution of the data: it is the uncertainty of the same estimate. It is obtained from the reported
 # 95% interval by scaling each side of it with qnorm(0.75) / qnorm(0.975) = 0.344 (exact for a normal sampling distribution,
 # on the log scale for odds ratios; an approximation for the percentile intervals of probabilities and bootstrap estimates).
-# cfg$plot$interval_style: "box" (default), "se" (one dot and +/- 1 SD = standard error), "ci95" (one dot and the 95% interval).
+# The cohort transition probabilities have their own setting, cfg$plot$transition_style (default "box").
 INTERVAL_K <- stats::qnorm(0.75) / stats::qnorm(0.975)
 
 # Adds the columns est_, lo_, hi_, q25_, q75_ to `d`, in place: the estimate, the ends of the whiskers / bar and the box.
@@ -235,7 +237,7 @@ plot_transition <- function(tr, cfg) {
     tr[, .(stream, cohort, measure = "P(missing tomorrow | observed today)", est = p_onset, lo = p_onset_low, hi = p_onset_high)],
     tr[, .(stream, cohort, measure = "P(missing tomorrow | missing today)", est = p_continue, lo = p_continue_low, hi = p_continue_high)]))
   long[, cohort := factor(cohort, levels = cfg$cohorts)]
-  style <- cfg$plot$interval_style %||% "box"
+  style <- cfg$plot$transition_style %||% "box"
   add_interval_columns(long, "est", "lo", "hi", style = style)
   ggplot(long, aes(x = cohort, y = est_, color = cohort, fill = cohort)) +
     interval_layer(style, horizontal = FALSE, color_var = "cohort", show.legend = FALSE) +
@@ -338,7 +340,7 @@ plot_missing_heatmap <- function(days, cfg, n_people = 300L, title = "Observed v
 # ---- model results ---------------------------------------------------------------------------------------
 
 # Forest plot of odds ratios. `tab` needs: label, or, or_low, or_high, and optionally group.
-plot_forest <- function(tab, title, xlab = "Odds ratio (log scale)", group_col = NULL, style = "box") {
+plot_forest <- function(tab, title, xlab = "Odds ratio (log scale)", group_col = NULL, style = "se") {
   d <- copy(tab)[!is.na(or)]
   d[, label := factor(label, levels = rev(unique(label)))]
   add_interval_columns(d, "or", "or_low", "or_high", log = TRUE, style = style)
@@ -375,7 +377,7 @@ plot_onset_forest <- function(coefs, cfg, title = "Prior-Day Activity and the Od
   d <- coefs[role == "primary" & grepl("^w_", term) & !is.na(or)]
   d[, label := paste0(nice_label(sub("^w_", "", term)))]
   d[, panel := paste0(nice_label(stream), "  (", format(n_events[1L], big.mark = ","), " gaps, ", format(n_persons[1L], big.mark = ","), " people)"), by = stream]
-  style <- cfg$plot$interval_style %||% "box"
+  style <- cfg$plot$interval_style %||% "se"
   add_interval_columns(d, "or", "or_low", "or_high", log = TRUE, style = style)
   ggplot(d, aes(x = est_, y = label)) +
     geom_vline(xintercept = 1, linetype = "dashed", color = "gray40") +
@@ -396,7 +398,7 @@ plot_cohort_forest <- function(cohort_specific, cohort_interaction, cfg,
   sub <- if (nrow(miss)) paste0("Not estimable (too few events): ", paste0(miss$cohort_stratum, " [", miss$stream, "]", collapse = ", "))
   lab <- if (nrow(cohort_interaction) > 0L)
     cohort_interaction[!is.na(p), .(stream, label = paste0("Do cohorts differ? LRT chisq(", df, ")=", round(chisq, 1), ", p", ifelse(p < 0.001, "<0.001", paste0("=", signif(p, 2)))))] else data.table(stream = character(), label = character())
-  style <- cfg$plot$interval_style %||% "box"
+  style <- cfg$plot$interval_style %||% "se"
   add_interval_columns(d, "or", "or_low", "or_high", log = TRUE, style = style)
   ggplot(d, aes(x = est_, y = cohort, color = cohort, fill = cohort)) +
     geom_vline(xintercept = 1, linetype = "dashed", color = "gray40") +
@@ -411,25 +413,33 @@ plot_cohort_forest <- function(cohort_specific, cohort_interaction, cfg,
     theme_bw(base_size = 11) + theme(strip.text = element_text(face = "bold"))
 }
 
-# Model B: estimated mean activity on the first full day back by length of the gap (lines, 95% CI)
-# against the observed group means (points, 95% CI that respects clustering within people).
+# Model B: estimated mean activity on the first full day back, for each gap length 1 .. cfg$predict$gap_curve_max, as
+# side-by-side bars (one colour per specification: unadjusted / adjusted) with the interval of the estimate
+# (cfg$plot$interval_style; the box style is drawn as the 95% interval). Grey dots are the observed group means with a
+# person-clustered 95% interval, placed at each group's median gap length.
 plot_gap_dose_response <- function(curve, observed, cfg,
                                    title = "Activity After a Gap, by How Long the Gap Was") {
   lab <- c(B_back2_unadj = "Unadjusted", B_back2_adj = "Adjusted (cohort, age, sex)")
   cv <- curve[model_id %in% names(lab)][, model := factor(lab[model_id], levels = lab)]
+  style <- cfg$plot$interval_style %||% "se"
+  add_interval_columns(cv, "est", "lo", "hi", style = style)
   ob <- observed[model_id == "B_back2_unadj"][, n_lab := paste0("n=", format(n_gaps, big.mark = ","))]
+  dg <- position_dodge(width = 0.8)
   ggplot() +
-    geom_hline(yintercept = 0, linetype = "dashed", color = "gray60") +
-    geom_ribbon(data = cv, aes(x = gap_length, ymin = lo, ymax = hi, fill = model), alpha = 0.18) +
-    geom_line(data = cv, aes(x = gap_length, y = est, color = model), linewidth = 0.9) +
-    geom_pointrange(data = ob, aes(x = x, y = mean, ymin = lo, ymax = hi), color = "gray20", size = 0.35) +
+    geom_hline(yintercept = 0, color = "gray40") +
+    geom_col(data = cv, aes(x = gap_length, y = est_, fill = model), width = 0.75, alpha = 0.8, position = dg) +
+    geom_errorbar(data = cv, aes(x = gap_length, ymin = lo_, ymax = hi_, group = model), width = 0.25, color = "gray20",
+                  position = dg, linewidth = 0.4) +
+    geom_pointrange(data = ob, aes(x = x, y = mean, ymin = lo, ymax = hi), color = "gray20", size = 0.3) +
     geom_text(data = ob, aes(x = x, y = -Inf, label = n_lab), vjust = -0.6, size = 2.6, color = "gray30") +
     facet_wrap(~stream, ncol = 1, scales = "free_y") +
-    scale_x_continuous(trans = "log2", breaks = c(1, 2, 4, 8, 14)) +
-    scale_color_manual(values = c("#2C3E50", "#E74C3C")) + scale_fill_manual(values = c("#2C3E50", "#E74C3C")) +
+    scale_x_continuous(breaks = sort(unique(cv$gap_length))) +
+    scale_fill_manual(values = c("#2C3E50", "#E74C3C")) +
     labs(title = title,
-         x = "Gap length (days, log scale)",
-         y = "Activity on first full day back\n(SD from the person's usual)", color = NULL, fill = NULL) +
+         x = "Gap length (days)",
+         y = "Activity on first full day back\n(SD from the person's usual)", fill = NULL,
+         caption = paste0("Bar: model estimate; error bar: ", c(se = "+/- 1 SD of the estimate (standard error)", ci95 = "95% interval")[[if (identical(style, "se")) "se" else "ci95"]],
+                          ". Grey dots: observed group means (95% CI)")) +
     theme_bw(base_size = 11) + theme(strip.text = element_text(face = "bold"), legend.position = "bottom")
 }
 
@@ -439,7 +449,7 @@ plot_ordinal_probs <- function(pred, cfg, title = "Gap Length Given Yesterday's 
   d <- copy(pred)[!is.na(prob)]
   d <- d[, .SD[adjusted == max(adjusted)], by = stream]          # the adjusted fit where there is one
   d[, z := factor(within_z, levels = c(-1, 0, 1), labels = c("1 SD below usual", "usual", "1 SD above usual"))]
-  style <- cfg$plot$interval_style %||% "box"
+  style <- cfg$plot$interval_style %||% "se"
   add_interval_columns(d, "prob", "prob_low", "prob_high", scale = 100, style = style)
   ggplot(d, aes(x = length_group, y = est_, color = z, fill = z)) +
     interval_layer(style, horizontal = FALSE, color_var = "z", width = 0.7, position = position_dodge(width = 0.8)) +
@@ -447,6 +457,163 @@ plot_ordinal_probs <- function(pred, cfg, title = "Gap Length Given Yesterday's 
     scale_color_manual(values = c("#E74C3C", "#7F8C8D", "#3498DB")) + scale_fill_manual(values = c("#E74C3C", "#7F8C8D", "#3498DB")) +
     labs(title = title, x = "Gap length (days)", y = "% of gaps in this length group", color = "Day before the gap",
          fill = "Day before the gap", caption = interval_caption(style)) +
+    theme_bw(base_size = 11) + theme(strip.text = element_text(face = "bold"), legend.position = "bottom")
+}
+
+# ---- one forest plot with ALL predictors per model and stream ---------------------------------------------------------------
+
+# Plain-language label of a predictor (the name after w_ / b_), with the transform that was applied.
+PREDICTOR_LABELS <- c(act_steps = "Steps", act_sedentary = "Sedentary minutes", act_mvpa = "MVPA minutes",
+                      sleep_inbed = "Time in bed", sleep_eff = "Sleep efficiency",
+                      hr_cover = "Heart-rate wear minutes", hr_elev = "Elevated heart-rate minutes")
+predictor_label <- function(x) ifelse(x %in% names(PREDICTOR_LABELS), PREDICTOR_LABELS[x], nice_label(x))
+
+# Short label of a model term for the y axis of the forest plots (units and reference levels are explained in the subtitle / caption).
+term_label <- function(term) {
+  fixed <- c(log2_gap = "Gap length", w_pre_day_steps = "Steps before the gap", age10 = "Age",
+             prev_gap_len_l = "Previous gap length", any_prior_gap = "Any earlier gap", days_since_return_l = "Days since return")
+  out <- vapply(term, function(t) {
+    if (t %in% names(fixed)) fixed[[t]]
+    else if (grepl("^t?w_", t)) paste0("Within: ", predictor_label(sub("^t?w_", "", t)))
+    else if (grepl("^b_", t)) paste0("Between: ", predictor_label(sub("^b_", "", t)))
+    else if (grepl("^cohort", t)) paste0("Cohort: ", sub("^cohort", "", t))
+    else if (grepl("^sex2", t)) paste0("Sex: ", sub("^sex2", "", t))
+    else if (grepl("^dow_t", t)) paste0("Weekday: ", sub("^dow_t", "", t))
+    else if (grepl("^factor\\(year_t\\)", t)) paste0("Year: ", sub("^factor\\(year_t\\)", "", t))
+    else if (grepl("^any_prior_gap", t)) "Any earlier gap"
+    else t
+  }, character(1))
+  unname(out)
+}
+
+# Which block of the forest plot a term belongs to.
+term_block <- function(term) {
+  lv <- c("Within-person (per 1 SD below usual)", "Between-person (per +1 SD)", "Covariates and gap history")
+  factor(ifelse(grepl("^t?w_", term), lv[1L], ifelse(grepl("^b_", term), lv[2L], lv[3L])), levels = lv)
+}
+
+forest_theme <- function() theme_bw(base_size = 11) + theme(strip.text = element_text(face = "bold"), legend.position = "bottom")
+
+# Height (inches) of a forest figure with `n_rows` estimates and `n_panels` panels.
+forest_height <- function(n_rows, n_panels = 1L) max(3.5, 1.4 + 0.27 * n_rows + 0.45 * n_panels)
+
+# Gap-onset model of ONE stream (the primary, joint, adjusted model): every fixed effect, drawn as two figures.
+#   part = "year"   the calendar-year terms (factor(year_t)), each against the first year
+#   part = "other"  everything else: within-person terms, between-person terms, covariates and gap history (in that order)
+# The intercept and the spline terms of study time are left out (their coefficients have no reading one by one).
+plot_onset_forest_all <- function(coefs, s, cfg, part = c("other", "year")) {
+  part <- match.arg(part)
+  d <- coefs[role == "primary" & stream == s & term != "(Intercept)" & !grepl("^splines::ns", term) & !is.na(or)]
+  d <- if (part == "year") d[grepl("^factor\\(year_t\\)", term)] else d[!grepl("^factor\\(year_t\\)", term)]
+  if (nrow(d) == 0L) return(NULL)
+  d[, label := term_label(term)]
+  d[, label := factor(label, levels = rev(unique(label)))]
+  style <- cfg$plot$interval_style %||% "se"
+  add_interval_columns(d, "or", "or_low", "or_high", log = TRUE, style = style)
+  n_txt <- paste0(format(d$n_events[1L], big.mark = ","), " gaps, ", format(d$n_persons[1L], big.mark = ","), " people; gap >= 1 day, joint adjusted model.")
+  p <- ggplot(d, aes(x = est_, y = label)) +
+    geom_vline(xintercept = 1, linetype = "dashed", color = "gray40") +
+    interval_layer(style, horizontal = TRUE) +
+    scale_x_log10(breaks = c(0.1, 0.25, 0.5, 0.8, 1, 1.25, 2, 4, 10)) + expand_limits(x = 1) +
+    labs(title = if (part == "year") paste0("Gap Onset: Calendar-Year Terms (", nice_label(s), " Stream)")
+                 else paste0("All Other Predictors of a Gap Starting Tomorrow (", nice_label(s), " Stream)"),
+         subtitle = paste0(n_txt, "\n", if (part == "year") "Odds ratio of a gap starting tomorrow, each calendar year against the first year in the data."
+                           else "Within: per 1 SD BELOW the person's usual. Between: per +1 SD. Age: per 10 years.\nCohorts are compared with Healthy; sex with Female; weekdays with Sunday; others per +1 unit."),
+         x = "Odds ratio (log scale)", y = NULL, caption = interval_caption(style)) +
+    forest_theme()
+  attr(p, "size") <- c(10, forest_height(nrow(d), 1L) + 0.4)
+  p
+}
+
+# Sensitivity analyses of ONE stream: every within-person predictor under every analysis (the pre-specified one is marked).
+# `all_terms`: the sensitivity_all_terms table. The spline and random-slope analyses are tests, not estimates, and are not drawn.
+SENSITIVITY_ORDER <- c("main", "trailing_baseline", "exclude_partial_wear", "first_gap_only", "main_sleep_only", "conditional_logit", "cluster_robust_logit")
+plot_sensitivity_forest_stream <- function(all_terms, s, cfg) {
+  d <- all_terms[stream == s & !is.na(or) & analysis %in% SENSITIVITY_ORDER]
+  if (nrow(d) == 0L) return(NULL)
+  prim <- sub("^w_", "", cfg$primary_term)
+  d[, pred := sub("^t?w_", "", term)]
+  d[, panel := predictor_label(pred)]
+  d[pred == prim, panel := paste0(panel, "  (pre-specified test)")]
+  d[, panel := factor(panel, levels = unique(panel[order(pred != prim, match(pred, unique(pred)))]))]
+  d[, label := factor(nice_label(analysis), levels = rev(nice_label(SENSITIVITY_ORDER)))]
+  style <- cfg$plot$interval_style %||% "se"
+  add_interval_columns(d, "or", "or_low", "or_high", log = TRUE, style = style)
+  p <- ggplot(d, aes(x = est_, y = label)) +
+    geom_vline(xintercept = 1, linetype = "dashed", color = "gray40") +
+    interval_layer(style, horizontal = TRUE) +
+    facet_wrap(~panel, ncol = 1) +
+    scale_x_log10(breaks = c(0.5, 0.8, 1, 1.25, 1.5, 2, 3)) + expand_limits(x = 1) +
+    labs(title = paste0("Sensitivity Analyses, All Within-Person Predictors (", nice_label(s), " Stream)"),
+         x = "Odds ratio per 1 SD below the person's usual (log scale)", y = NULL, caption = interval_caption(style)) +
+    forest_theme()
+  attr(p, "size") <- c(9, forest_height(nrow(d), uniqueN(d$panel)))
+  p
+}
+
+# Model B of ONE stream: every fixed effect of the four specifications (change in activity on the day back, in SD units).
+GAPB_LABELS <- c(B_back2_unadj = "Unadjusted: first full day back", B_back2_adj = "Adjusted: first full day back",
+                 B_back2_adj_pre = "Adjusted + steps before the gap: first full day back",
+                 B_back1_adj = "Adjusted: first day back")
+plot_gapB_forest <- function(all_terms, s, cfg) {
+  d <- all_terms[stream == s & !is.na(estimate) & !is.na(se) & model_id %in% names(GAPB_LABELS)]
+  if (nrow(d) == 0L) return(NULL)
+  d[, `:=`(panel = factor(GAPB_LABELS[model_id], levels = GAPB_LABELS), label = term_label(term))]
+  d[, label := factor(label, levels = rev(unique(term_label(c("log2_gap", "w_pre_day_steps", d$term)))))]
+  style <- cfg$plot$interval_style %||% "se"
+  add_interval_columns(d, "estimate", "conf_low", "conf_high", style = style)
+  p <- ggplot(d, aes(x = est_, y = label)) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "gray40") +
+    interval_layer(style, horizontal = TRUE) +
+    facet_wrap(~panel, ncol = 1, scales = "free_y") +
+    labs(title = paste0("Model B, All Predictors (", nice_label(s), " Stream): Activity After a Gap"),
+         subtitle = "Gap length: per doubling. Steps before the gap: per 1 SD below usual. Age: per 10 years. Cohorts are compared with Healthy; sex with Female.",
+         x = "Change in activity on the day back (SD from the person's usual); 0 = no change",
+         y = NULL, caption = interval_caption(style)) +
+    forest_theme()
+  attr(p, "size") <- c(10, forest_height(nrow(d), uniqueN(d$panel)))
+  p
+}
+
+# Model C of ONE stream: every coefficient of the ordinal model as an odds ratio of a LONGER gap (only where proportional odds held).
+GAPC_LABELS <- c(C_unadj = "Unadjusted", C_adj = "Adjusted")
+plot_gapC_forest <- function(all_terms, s, cfg) {
+  d <- all_terms[stream == s & !is.na(or) & !is.na(se) & model_id %in% names(GAPC_LABELS)]
+  if (nrow(d) == 0L) return(NULL)
+  d[, `:=`(panel = factor(GAPC_LABELS[model_id], levels = GAPC_LABELS), label = term_label(term))]
+  d[, label := factor(label, levels = rev(unique(term_label(c("w_pre_day_steps", d$term)))))]
+  style <- cfg$plot$interval_style %||% "se"
+  add_interval_columns(d, "or", "or_low", "or_high", log = TRUE, style = style)
+  p <- ggplot(d, aes(x = est_, y = label)) +
+    geom_vline(xintercept = 1, linetype = "dashed", color = "gray40") +
+    interval_layer(style, horizontal = TRUE) +
+    facet_wrap(~panel, ncol = 1, scales = "free_y") +
+    scale_x_log10(breaks = c(0.5, 0.8, 1, 1.25, 1.5, 2, 3)) + expand_limits(x = 1) +
+    labs(title = paste0("Model C, All Predictors (", nice_label(s), " Stream): Odds of a Longer Gap"),
+         x = "Odds ratio of a longer gap (log scale)",
+         subtitle = "Steps before the gap: per 1 SD BELOW usual. Age: per 10 years.\nCohorts are compared with Healthy; sex with Female.",
+         y = NULL, caption = interval_caption(style)) +
+    forest_theme()
+  attr(p, "size") <- c(10, forest_height(nrow(d), uniqueN(d$panel)))
+  p
+}
+
+# The one extra figure per stream: the observed (model-free) % of days followed by a gap, by decile of yesterday's
+# within-person steps, one line per cohort. It shows the shape of the association that the odds ratio summarises.
+plot_onset_deciles <- function(dec, s, cfg) {
+  d <- dec[stream == s & !is.na(rate)]
+  if (nrow(d) == 0L) return(NULL)
+  d[, `:=`(cohort = factor(cohort, levels = cfg$cohorts), dec = factor(decile))]
+  style <- cfg$plot$interval_style %||% "se"
+  add_interval_columns(d, "rate", "rate_low", "rate_high", scale = 100, style = style)
+  dg <- position_dodge(width = 0.6)
+  ggplot(d, aes(x = dec, y = est_, color = cohort, fill = cohort, group = cohort)) +
+    geom_line(linewidth = 0.5, alpha = 0.6, position = dg) +
+    interval_layer(style, horizontal = FALSE, color_var = "cohort", width = 0.5, position = dg) +
+    scale_color_manual(values = cfg$palette$cohort) + scale_fill_manual(values = cfg$palette$cohort) +
+    labs(title = paste0("Observed Gap Rate by Yesterday's Steps (", nice_label(s), " Stream)"),
+         x = "Decile of yesterday's steps vs the person's usual (1 = lowest, 10 = highest)",
+         y = "% of days followed by a gap", color = "Cohort", fill = "Cohort", caption = interval_caption(style)) +
     theme_bw(base_size = 11) + theme(strip.text = element_text(face = "bold"), legend.position = "bottom")
 }
 
@@ -472,21 +639,36 @@ figure_captions <- function() c(
   onset_primary_forest = "Primary gap-onset model (gap >= 1 day, joint, adjusted). Odds ratio that a gap starts tomorrow per 1 SD BELOW the person's own usual value yesterday (OR > 1: lower-than-usual days precede gaps). Odds ratios, not risk ratios; conditional on the person's random intercept. Association, not causation.",
   forest_gap_definition = "The primary within-person steps effect when a gap is defined as >= 1, 2, 3 or 7 missing days (model D). Same odds-ratio reading as above.",
   risk_curve = "Population-average chance that a gap starts tomorrow when yesterday was 1 SD below / at / 1 SD above the person's usual steps (unadjusted joint model; bars = 95% interval from the intercept and slope only). Absolute risks for illustration; they depend on the random-intercept variance.",
-  cohort_forest = "The primary effect fitted separately in each cohort. The label is the likelihood-ratio test (LRT) of the whole model with vs without a cohort x effect interaction: chisq with df = cohorts - 1, small p = the effect of prior-day steps differs between cohorts. It is one overall test of difference, not a comparison of single pairs, and boxes that overlap or do not overlap are not a substitute for it. Separate-cohort estimates are conditional on that cohort's own random intercept.",
+  cohort_forest = "The primary effect fitted separately in each cohort. The label is the likelihood-ratio test (LRT) of the whole model with vs without a cohort x effect interaction: chisq with df = cohorts - 1, small p = the effect of prior-day steps differs between cohorts. It is one overall test of difference, not a comparison of single pairs, and intervals that overlap or do not overlap are not a substitute for it. Separate-cohort estimates are conditional on that cohort's own random intercept.",
+  "onset_forest_year_*" = "Gap-onset model of this stream (gap >= 1 day, joint, adjusted), part 1 of 2: the calendar-year terms. Odds ratio that a gap starts tomorrow in each calendar year against the first year in the data (the reference year), adjusted for everything else in the model. Odds ratios, not risk ratios; association, not causation.",
+  "onset_forest_other_*" = "Gap-onset model of this stream (gap >= 1 day, joint, adjusted), part 2 of 2: every predictor except the calendar years, in this order: within-person terms (odds ratio that a gap starts tomorrow per 1 SD BELOW the person's own usual; OR > 1: lower-than-usual days precede gaps), between-person terms (a person's usual level, per +1 SD), then covariates (cohort against Healthy, age per 10 years, sex against Female, weekday against Sunday) and gap history (previous gap length, any earlier gap, days since the last return), per +1 unit. The natural-spline terms of study time are in onset_coefficients.tsv. Odds ratios, not risk ratios; association, not causation.",
+  "sensitivity_forest_*" = "Sensitivity analyses of this stream: every within-person predictor (one panel each; the pre-specified test is marked) under each analysis - the main fit, a trailing 14-day baseline, no partial-wear days, first gap only, main-sleep-only (sleep), conditional logit and cluster-robust SE. Odds ratio per 1 SD below the person's usual. Estimates that agree across analyses are robust to those assumptions. The spline and random-slope analyses are likelihood-ratio tests and are in sensitivity.tsv.",
+  "gapB_forest_*" = "Model B of this stream (exploratory), every fixed effect of the four specifications: change in activity on the first (full) day back, in SD of the person's usual, per doubling of the gap, per 1 SD of the day before the gap, per 10 years of age, and cohort (against Healthy) / sex (against Female) differences. 0 = no change. Conditional on a gap having occurred.",
+  "gapC_forest_*" = "Model C of this stream (exploratory; only where proportional odds held): every coefficient of the ordinal mixed model as an odds ratio of a LONGER gap (steps the day before the gap per 1 SD below usual; age per 10 years; cohorts against Healthy, sex against Female).",
+  "onset_deciles_*" = "Observed, model-free % of days followed by a gap, by decile of yesterday's within-person steps (1 = lowest relative to the person's usual), one line per cohort; the deciles are cut over all days at risk. Unadjusted; it shows the shape of the association that the odds ratio summarises (a falling line = lower-than-usual days precede gaps more often). Intervals respect several days per person (person-clustered).",
   forest_sensitivity = "The primary effect under different assumptions (trailing 14-day baseline, no partial-wear days, first gap only, main-sleep-only, conditional logit, cluster-robust SE). Spline and random-slope analyses are likelihood-ratio tests and are listed in sensitivity.tsv, not drawn here.",
-  gap_dose_response = "Model B (exploratory). Mean activity on the first full day after a gap (SD from the person's usual) by gap length, with the fitted straight line in log2(gap length) and its 95% CI; points are observed group means with person-clustered 95% CI. Conditional on a gap having occurred.",
+  gap_dose_response = "Model B (exploratory). Mean activity on the first full day after a gap (SD from the person's usual) for each gap length: bars = the model's fitted value (straight line in log2(gap length)), one colour for the unadjusted and one for the adjusted fit, with the interval of the estimate; grey dots = observed group means with person-clustered 95% CI. Conditional on a gap having occurred.",
   gap_length_probs = "Model C (exploratory, shown only where proportional odds held). Population-average probability of each gap-length group when the day before the gap was 1 SD below / at / 1 SD above usual steps, with 95% intervals. Not shown for streams where proportional odds was rejected (see model_C_gap_length.tsv)."
 )
 
-# figures drawn as box-and-whisker intervals of an estimate (see interval_layer)
-INTERVAL_FIGURES <- c("transition", "onset_primary_forest", "forest_gap_definition", "cohort_forest", "forest_sensitivity", "gap_length_probs")
-INTERVAL_FIGURE_NOTE <- " One box per estimate: line = estimate, box = central 50% interval, whiskers = 95% interval - the uncertainty of the estimate, not the spread of the data (the 50% interval is derived from the 95% interval, exact for a normal sampling distribution). cfg$plot$interval_style = \"se\" (dot +/- 1 SD) or \"ci95\" (dot + 95% interval) draws the alternatives."
+# figures that show an estimate with an interval (see interval_layer); `*_` entries match every figure with that prefix
+INTERVAL_FIGURES <- c("transition", "onset_primary_forest", "forest_gap_definition", "cohort_forest", "forest_sensitivity", "gap_length_probs",
+                      "onset_forest_year_", "onset_forest_other_", "sensitivity_forest_", "gapB_forest_", "gapC_forest_", "onset_deciles_")
+interval_note <- function(style = "se") {
+  if (identical(style, "box")) " One box per estimate: line = estimate, box = central 50% interval, whiskers = 95% interval - the uncertainty of the estimate, not the spread of the data (the 50% interval is derived from the 95% interval, exact for a normal sampling distribution). cfg$plot$interval_style = \"se\" (dot +/- 1 SD) or \"ci95\" (dot + 95% interval) draws the alternatives."
+  else if (identical(style, "ci95")) " One dot per estimate with its 95% interval (the uncertainty of the estimate, not the spread of the data). cfg$plot$interval_style = \"se\" (dot +/- 1 SD) or \"box\" draws the alternatives."
+  else " One dot per estimate with a bar of +/- 1 SD of the estimate (its standard error; about a 68% interval) - the uncertainty of the estimate, not the spread of the data. cfg$plot$interval_style = \"ci95\" (dot + 95% interval) or \"box\" (box + whiskers) draws the alternatives."
+}
 
-caption_for <- function(name) {
+# Caption of a figure; `cfg` decides which interval style the note describes (transition has its own setting).
+caption_for <- function(name, cfg = NULL) {
   cp <- figure_captions()
-  if (name %in% INTERVAL_FIGURES && name %in% names(cp)) return(paste0(cp[[name]], INTERVAL_FIGURE_NOTE))
-  if (name %in% names(cp)) return(cp[[name]])
+  style <- if (identical(name, "transition")) cfg$plot$transition_style %||% "box" else cfg$plot$interval_style %||% "se"
+  is_interval <- name %in% INTERVAL_FIGURES || any(endsWith(INTERVAL_FIGURES, "_") & startsWith(name, INTERVAL_FIGURES))
+  note <- if (is_interval) interval_note(style) else ""
+  if (name %in% names(cp)) return(paste0(cp[[name]], note))
   pre <- names(cp)[endsWith(names(cp), "_*")]
   hit <- pre[startsWith(name, sub("\\*$", "", pre))]
-  if (length(hit)) cp[[hit[1L]]] else NA_character_
+  if (length(hit)) return(paste0(cp[[hit[1L]]], note))
+  NA_character_
 }

@@ -70,7 +70,7 @@ build_gap_level_data <- function(days, act_days, persons, cfg, pred = "act_steps
               length_bin = collapse_sparse_bins(gap_length_bin(gap_length, cfg), cfg$gap_models$min_bin_n))]
   gaps[, c("gap_index", "prev_obs_date", "gap_start", "gap_end", "next_obs_date") := NULL]
 
-  cov <- persons[, .(person_id, cohort, sex2 = factor(as.character(sex), levels = c("Female", "Male")),
+  cov <- persons[, .(person_id, cohort = cohort_factor(cohort, cfg), sex2 = factor(as.character(sex), levels = c("Female", "Male")),
                      age10 = (age_first - 60) / 10)]
   merge(gaps, cov, by = "person_id", all.x = TRUE, sort = FALSE)[]
 }
@@ -135,8 +135,8 @@ fit_gap_dose_response <- function(gdat, cfg, outcome = "back2_dev", adjusted = F
                      n_gaps = nrow(d), n_persons = uniqueN(d$person_id),
                      outcome_mean = mean(d[[outcome]]), outcome_sd = stats::sd(d[[outcome]]),    # outcome distribution (z-scores: ~0 and ~1)
                      gaps_per_person_max = if (nrow(d)) max(table(d$person_id)) else NA_integer_)
-  finish <- function(coef) list(coef = coef, curve = NULL, observed = NULL,
-                                info = coef[, .(model_id, status, note)])
+  finish <- function(coef, coef_all = NULL) list(coef = coef, curve = NULL, observed = NULL, coef_all = coef_all,
+                                                  info = coef[, .(model_id, status, note)])
   if (nrow(d) < cfg$gap_models$min_gaps) return(finish(empty_B_row(base, "not_estimable", "too few gaps")))
 
   rhs <- c("log2_gap", if (adjust_pre) "w_pre_day_steps", if (adjusted) gap_adjusters(d), "(1 | person_id)")
@@ -156,7 +156,19 @@ fit_gap_dose_response <- function(gdat, cfg, outcome = "back2_dev", adjusted = F
                              collapse = " | "))
   curve <- cbind(model_id = id, outcome = outcome, adjusted = adjusted, adjust_pre = adjust_pre, gap_curve_B(fit, cfg))
   obs   <- cbind(model_id = id, outcome = outcome, observed_by_gap_length(d, outcome, cfg))
-  list(coef = coef, curve = curve, observed = obs, info = coef[, .(model_id, status, note)])
+  # every fixed effect of the model (not the intercept), for the forest plot of all predictors
+  all_fx <- fixed_effects_table(fit)
+  all_fx <- cbind(model_id = id, outcome = outcome, adjusted = adjusted, adjust_pre = adjust_pre, status = coef$status,
+                  all_fx[term != "(Intercept)"])
+  list(coef = coef, curve = curve, observed = obs, coef_all = all_fx, info = coef[, .(model_id, status, note)])
+}
+
+# All fixed effects of an lmer fit with Wald 95% intervals (normal approximation, as in fixed_effect_row).
+fixed_effects_table <- function(fit) {
+  cf <- coef(summary(fit))
+  data.table(term = rownames(cf), estimate = cf[, 1], se = cf[, 2],
+             conf_low = cf[, 1] - 1.96 * cf[, 2], conf_high = cf[, 1] + 1.96 * cf[, 2],
+             p = 2 * stats::pnorm(abs(cf[, 1] / cf[, 2]), lower.tail = FALSE))
 }
 
 fixed_effect_row <- function(fit, term) {
@@ -256,7 +268,8 @@ fit_gap_length_ordinal <- function(gdat, cfg, adjusted = FALSE, id = NA_characte
   base <- data.table(model = "C", model_id = id, adjusted = adjusted, n_gaps = nrow(d), n_persons = uniqueN(d$person_id),
                      length_groups = paste(names(counts), collapse = " | "),
                      group_counts = paste(counts, collapse = " | "))
-  finish <- function(coef, pred = NULL) list(coef = coef, pred = pred, info = coef[, .(model_id, status, note)])
+  finish <- function(coef, pred = NULL, coef_all = NULL) list(coef = coef, pred = pred, coef_all = coef_all,
+                                                              info = coef[, .(model_id, status, note)])
   if (nrow(d) < cfg$gap_models$min_gaps) return(finish(empty_C_row(base, "not_estimable", "too few gaps")))
   if (nlevels(d$length_bin) < 3L) return(finish(empty_C_row(base, "not_estimable", "fewer than 3 length groups")))
 
@@ -295,13 +308,14 @@ fit_gap_length_ordinal <- function(gdat, cfg, adjusted = FALSE, id = NA_characte
   if (mixed_ok) {
     z <- with_seed(cfg$seed, matrix(stats::rnorm(cfg$predict$n_draws * length(par_hat)), cfg$predict$n_draws))
     par_draws <- sweep(z %*% L, 2L, par_hat, "+"); colnames(par_draws) <- par_names
+    se_vec <- sqrt(diag(V))
   } else {
     # The random-intercept variance is on the boundary (no person-to-person difference in gap length)
     # or the Hessian is unusable, so the mixed model has no covariance. Fall back to the same ordinal model
     # without the random effect and a person-level (cluster) bootstrap for all uncertainty.
     bt <- tryCatch(ordinal_cluster_bootstrap(d, f_fixed, cfg), error = function(e) e)
     if (inherits(bt, "error")) return(finish(empty_C_row(base, paste("failed:", conditionMessage(bt)), note, po$po_p)))
-    par_hat <- bt$par_hat; par_draws <- bt$draws; sigma2 <- 0
+    par_hat <- bt$par_hat; par_draws <- bt$draws; sigma2 <- 0; se_vec <- bt$se
     est <- par_hat[["w_pre_day_steps"]]; se <- bt$se[["w_pre_day_steps"]]
     status <- "ok_bootstrap_se"
     note <- paste(c(note, "random-intercept variance on boundary or Hessian unusable; no random effect, cluster-bootstrap uncertainty"), collapse = "; ")
@@ -318,7 +332,15 @@ fit_gap_length_ordinal <- function(gdat, cfg, adjusted = FALSE, id = NA_characte
                          or_low = exp(-(est + 1.96 * se)), or_high = exp(-(est - 1.96 * se)),
                          po_p = po$po_p, converged = conv, sigma_person = sqrt(sigma2), status = status,
                          note = paste(c(note, utils::head(unique(notes), 3L)), collapse = " | ")))
-  finish(coef, pred)
+  # every coefficient of the model (thresholds excluded) with its odds ratio of a LONGER gap: per 1 SD BELOW usual for the
+  # prior-day term (sign flipped, as in `coef`), per +1 unit / vs the reference level for the others
+  b_names <- setdiff(names(par_hat), names(par_hat)[grepl("\\|", names(par_hat))])
+  all_fx <- data.table(term = b_names, estimate = unname(par_hat[b_names]), se = unname(se_vec[b_names]))
+  all_fx[, `:=`(conf_low = estimate - 1.96 * se, conf_high = estimate + 1.96 * se,
+                p = 2 * stats::pnorm(abs(estimate / se), lower.tail = FALSE))]
+  all_fx <- add_odds_ratios(all_fx)          # the `w_pre_day_steps` term is a within-person z-score: OR per 1 SD below usual
+  all_fx <- cbind(model_id = id, adjusted = adjusted, status = status, all_fx)
+  finish(coef, pred, all_fx)
 }
 
 # ---- the gap-model stage for ONE stream, as independent checkpointed units ---------------------------------
@@ -333,6 +355,10 @@ gap_unit_specs <- function() list(
   C_unadj         = list(model = "C", adjusted = FALSE),
   C_adj           = list(model = "C", adjusted = TRUE))
 
+# Version of the stored B / C results (2: every coefficient of the model is kept for the forest plots). Part of the
+# checkpoint key, so results stored by an older version are recomputed, never mixed in.
+GAP_SCHEMA <- 2L
+
 # gap_data : lazy(build_gap_level_data(...)) - built only when some unit has to run.
 # The gap table is small (one row per gap) and a unit needs well under 1 GB, so the units that still
 # have to run are executed side by side (cfg$resources$light_workers, capped by free memory). Model C
@@ -342,7 +368,7 @@ run_gap_stage <- function(s, gap_data, cfg, ckpt_dir, dkey) {
   specs <- gap_unit_specs(); ids <- names(specs)
   kind_of <- function(id) if (specs[[id]]$model == "B") "gapB" else "gapC"
   unit_of <- function(id) list(kind = kind_of(id), stream = s, id = id)
-  key_of  <- function(id) ckpt_key(cfg, kind_of(id), dkey, specs[[id]])
+  key_of  <- function(id) ckpt_key(cfg, kind_of(id), dkey, c(specs[[id]], list(schema = GAP_SCHEMA)))
   one <- function(id, cfg_u) {
     sp <- specs[[id]]
     run_unit(ckpt_dir, unit_of(id), key_of(id), function() {
@@ -375,5 +401,7 @@ collect_gap_results <- function(ckpt_dir, cfg, data_keys) {
        model_B_observed          = tag(b$values, b$units, "observed"),
        model_C_gap_length        = tag(cc$values, cc$units, "coef"),
        model_C_predicted_probs   = tag(cc$values, cc$units, "pred"),
+       model_B_all_terms         = tag(b$values, b$units, "coef_all"),
+       model_C_all_terms         = tag(cc$values, cc$units, "coef_all"),
        gap_failures              = rbindlist(list(b$failures, cc$failures), fill = TRUE))
 }

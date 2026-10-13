@@ -45,6 +45,8 @@ test_that("model-result figures draw from saved result tables and are labelled h
   obs <- data.table(stream = "activity", model_id = "B_back2_unadj", x = c(1, 2, 5, 10), mean = c(0, -0.02, -0.04, -0.1),
                     lo = c(-0.05, -0.08, -0.12, -0.3), hi = c(0.05, 0.04, 0.04, 0.1), n_gaps = c(300L, 150L, 60L, 10L))
   ok(plot_gap_dose_response(curve, obs, cfg))
+  gb <- vapply(plot_gap_dose_response(curve, obs, cfg)$layers, function(l) class(l$geom)[1L], "")
+  expect_true("GeomCol" %in% gb); expect_false("GeomLine" %in% gb); expect_false("GeomRibbon" %in% gb)    # bars, not lines
   pred <- CJ(stream = "activity", adjusted = TRUE, within_z = c(-1, 0, 1), length_group = factor(c("1", "2", "3+"), ordered = TRUE))[
     , `:=`(prob = 1 / 3, prob_low = 0.25, prob_high = 0.4)]
   ok(plot_ordinal_probs(pred, cfg))
@@ -53,7 +55,8 @@ test_that("model-result figures draw from saved result tables and are labelled h
 test_that("every figure the pipeline can make has a caption", {
   nm <- c("missing_pct_by_cohort", "longest_gap_by_cohort", "gap_ecdf", "gap_length_distribution", "heatmap_sleep", "transition",
           "missing_by_study_week", "missing_by_year", "missing_by_weekday", "metrics_hr_by_sex", "onset_primary_forest",
-          "forest_gap_definition", "risk_curve", "cohort_forest", "forest_sensitivity", "gap_dose_response", "gap_length_probs")
+          "forest_gap_definition", "risk_curve", "cohort_forest", "forest_sensitivity", "gap_dose_response", "gap_length_probs",
+          "onset_forest_year_activity", "onset_forest_other_hr", "sensitivity_forest_sleep", "gapB_forest_activity", "gapC_forest_hr", "onset_deciles_sleep")
   expect_false(anyNA(vapply(nm, caption_for, character(1))))
   expect_true(is.na(caption_for("not_a_figure")))
   d <- tempfile(); write_figure_captions(c("gap_ecdf", "risk_curve"), d)
@@ -92,7 +95,7 @@ test_that("stratified % missing figure draws the dodged violins with the within-
   expect_error(plot_missing_pct_by_stratum(long, "nope", tests, cfg, "t"), "unknown stratum")
 })
 
-test_that("estimates with intervals are drawn as box plots (line = estimate, box = 50%, whiskers = 95%); dot styles remain available", {
+test_that("model figures are dot +/- 1 SD by default; box and 95%-interval styles remain available; transition keeps its own setting", {
   z <- stats::qnorm(0.975); q <- stats::qnorm(0.75)
   d <- data.table(est = 1, lo = 1 - z * 0.2, hi = 1 + z * 0.2)                       # a normal estimate: SE = 0.2
   add_interval_columns(d, "est", "lo", "hi"); expect_equal(c(d$lo_, d$q25_, d$est_, d$q75_, d$hi_), 1 + c(-z, -q, 0, q, z) * 0.2)
@@ -101,13 +104,18 @@ test_that("estimates with intervals are drawn as box plots (line = estimate, box
   dp <- data.table(p = 0.3, lo = 0.2, hi = 0.5); add_interval_columns(dp, "p", "lo", "hi", scale = 100)   # asymmetric interval stays asymmetric and nested
   expect_true(dp$q25_ > dp$lo_ && dp$q25_ < dp$est_ && dp$q75_ > dp$est_ && dp$q75_ < dp$hi_); expect_gt(dp$hi_ - dp$est_, dp$est_ - dp$lo_)
   ds <- data.table(est = 1, lo = 1 - z * 0.2, hi = 1 + z * 0.2); add_interval_columns(ds, "est", "lo", "hi", style = "se"); expect_equal(c(ds$lo_, ds$hi_), c(0.8, 1.2))
+  dls <- data.table(or = 2, lo = exp(log(2) - z * 0.1), hi = exp(log(2) + z * 0.1)); add_interval_columns(dls, "or", "lo", "hi", log = TRUE, style = "se")
+  expect_equal(c(dls$lo_, dls$hi_), exp(log(2) + c(-0.1, 0.1)))                       # +/- 1 SE on the log scale
   d95 <- data.table(est = 1, lo = 0.6, hi = 1.4); add_interval_columns(d95, "est", "lo", "hi", style = "ci95"); expect_equal(c(d95$lo_, d95$hi_), c(0.6, 1.4))
 
-  cfg <- make_config(); ft <- data.table(label = c("a", "b"), or = c(1.5, 1.2), or_low = c(1.2, 0.9), or_high = c(1.9, 1.6))
+  cfg <- make_config(); expect_equal(cfg$plot$interval_style, "se"); expect_equal(cfg$plot$transition_style, "box")
+  cfg_box <- make_config(list(plot = list(interval_style = "box")))
+  ft <- data.table(label = c("a", "b"), or = c(1.5, 1.2), or_low = c(1.2, 0.9), or_high = c(1.9, 1.6))
   geoms <- function(p) vapply(p$layers, function(l) class(l$geom)[1L], "")
-  expect_true("GeomBoxplot" %in% geoms(plot_forest(ft, "t"))); expect_false("GeomPointrange" %in% geoms(plot_forest(ft, "t")))
-  for (st in c("se", "ci95")) expect_true("GeomPointrange" %in% geoms(plot_forest(ft, "t", style = st)))
-  expect_match(plot_forest(ft, "t")$labels$caption, "box: 50% interval"); expect_match(plot_forest(ft, "t", style = "se")$labels$caption, "1 SD")
+  expect_true("GeomPointrange" %in% geoms(plot_forest(ft, "t"))); expect_false("GeomBoxplot" %in% geoms(plot_forest(ft, "t")))
+  expect_true("GeomBoxplot" %in% geoms(plot_forest(ft, "t", style = "box")))
+  expect_true("GeomPointrange" %in% geoms(plot_forest(ft, "t", style = "ci95")))
+  expect_match(plot_forest(ft, "t")$labels$caption, "1 SD"); expect_match(plot_forest(ft, "t", style = "box")$labels$caption, "box: 50% interval")
 
   coefs <- data.table(stream = "activity", role = "primary", term = "w_act_steps", or = 1.6, or_low = 1.4, or_high = 1.8, n_events = 5L, n_persons = 3L)
   cs <- data.table(stream = "activity", cohort_stratum = "Healthy", or = 1.5, or_low = 1.2, or_high = 1.9)
@@ -115,15 +123,64 @@ test_that("estimates with intervals are drawn as box plots (line = estimate, box
   tr <- data.table(stream = "activity", cohort = cfg$cohorts, p_onset = 0.02, p_onset_low = 0.01, p_onset_high = 0.03,
                    p_continue = 0.5, p_continue_low = 0.4, p_continue_high = 0.6)
   inter <- data.table(stream = "activity", term = "w_act_steps", chisq = 3.2, df = 3L, p = 0.36, status = "ok")
-  for (p in list(plot_onset_forest(coefs, cfg), plot_cohort_forest(cs, inter, cfg), plot_ordinal_probs(pred, cfg), plot_transition(tr, cfg))) {
-    expect_true("GeomBoxplot" %in% geoms(p)); expect_silent(suppressWarnings(ggplot2::ggplot_build(p)))
+  for (p in list(plot_onset_forest(coefs, cfg), plot_cohort_forest(cs, inter, cfg), plot_ordinal_probs(pred, cfg))) {
+    expect_true("GeomPointrange" %in% geoms(p)); expect_silent(suppressWarnings(ggplot2::ggplot_build(p)))
   }
-  cfg_se <- make_config(list(plot = list(interval_style = "se")))
-  expect_true("GeomPointrange" %in% geoms(plot_ordinal_probs(pred, cfg_se)))
+  for (p in list(plot_onset_forest(coefs, cfg_box), plot_cohort_forest(cs, inter, cfg_box), plot_ordinal_probs(pred, cfg_box), plot_transition(tr, cfg))) {
+    expect_true("GeomBoxplot" %in% geoms(p)); expect_silent(suppressWarnings(ggplot2::ggplot_build(p)))      # transition stays a box by default
+  }
+  expect_true("GeomPointrange" %in% geoms(plot_transition(tr, make_config(list(plot = list(transition_style = "se"))))))
   txt <- vapply(plot_cohort_forest(cs, inter, cfg)$layers, function(l) if (is.null(l$data) || inherits(l$data, "waiver")) "" else paste(unlist(l$data), collapse = " "), "")
   expect_true(any(grepl("LRT chisq\\(3\\)=3.2, p=0.36", txt)))                                    # the cohort-difference test is labelled with its statistic and df
-  expect_match(caption_for("cohort_forest"), "central 50% interval"); expect_match(caption_for("cohort_forest"), "likelihood-ratio test")
-  expect_false(grepl("central 50%", caption_for("gap_ecdf")))
+  expect_match(caption_for("cohort_forest", cfg), "1 SD of the estimate"); expect_match(caption_for("cohort_forest", cfg), "likelihood-ratio test")
+  expect_match(caption_for("cohort_forest", cfg_box), "central 50% interval"); expect_match(caption_for("transition", cfg), "central 50% interval")
+  expect_false(grepl("1 SD of the estimate", caption_for("gap_ecdf", cfg)))
+})
+
+test_that("one forest plot with all predictors per stream for the onset, sensitivity, B and C models, and the extra decile figure", {
+  cfg <- make_config(); geoms <- function(p) vapply(p$layers, function(l) class(l$geom)[1L], "")
+  built <- function(p, sized = TRUE) { expect_s3_class(p, "ggplot"); expect_silent(suppressWarnings(ggplot2::ggplot_build(p))); if (sized) expect_equal(length(attr(p, "size")), 2L) }
+  terms <- c("(Intercept)", "w_act_steps", "w_act_sedentary", "b_act_steps", "b_act_sedentary", "cohortDiabetes", "age10", "sex2Male",
+             "dow_tTue", "splines::ns(study_day, 3)1", "factor(year_t)2021", "prev_gap_len_l", "any_prior_gap", "days_since_return_l")
+  co <- data.table(stream = "activity", role = "primary", term = terms, estimate = 0.1, or = 1.2, or_low = 1.1, or_high = 1.3, n_events = 50L, n_persons = 30L)
+  co <- rbind(co, copy(co)[, stream := "sleep"][term == "w_act_steps", term := "w_sleep_eff"])
+  co <- rbind(co, copy(co[term == "factor(year_t)2021"])[, term := "factor(year_t)2022"])
+  p <- plot_onset_forest_all(co, "activity", cfg); built(p)                              # part 2 (default): everything except the years
+  d <- ggplot2::ggplot_build(p)$plot$data
+  expect_false(any(grepl("Intercept|splines|year_t", d$term)))                           # intercept, spline basis and years are not in this part
+  expect_true(all(c("w_act_steps", "b_act_steps", "age10", "cohortDiabetes", "dow_tTue", "any_prior_gap") %in% d$term))
+  expect_equal(levels(d$label)[1L], "Days since return")                 # model order, top to bottom
+  expect_equal(rev(levels(d$label))[1L:2L], c("Within: Steps", "Within: Sedentary minutes"))
+  expect_s3_class(p$facet, "FacetNull")                                                  # no panel strips on the right
+  py <- plot_onset_forest_all(co, "activity", cfg, part = "year"); built(py)             # part 1: the calendar years only
+  dy <- ggplot2::ggplot_build(py)$plot$data
+  expect_equal(sort(dy$term), c("factor(year_t)2021", "factor(year_t)2022")); expect_equal(rev(levels(dy$label)), c("Year: 2021", "Year: 2022"))
+  expect_false(any(grepl("[()]", c(levels(d$label), levels(dy$label)))))                 # no bracketed text on the y axis
+  expect_equal(nrow(d) + nrow(dy), nrow(co[stream == "activity" & !term %in% c("(Intercept)", "splines::ns(study_day, 3)1")]))   # nothing lost, nothing twice
+  expect_null(plot_onset_forest_all(co[!grepl("year_t", term)], "activity", cfg, part = "year"))
+  expect_true("GeomPointrange" %in% geoms(p)); expect_true("GeomBoxplot" %in% geoms(plot_onset_forest_all(co, "activity", make_config(list(plot = list(interval_style = "box"))))))
+  expect_null(plot_onset_forest_all(co, "hr", cfg))
+  expect_equal(term_label("cohortDiabetes"), "Cohort: Diabetes"); expect_equal(term_label("w_act_mvpa"), "Within: MVPA minutes"); expect_equal(term_label("b_sleep_eff"), "Between: Sleep efficiency")
+  expect_false(any(grepl("[()]", term_label(c("log2_gap", "w_pre_day_steps", "age10", "sex2Male", "dow_tMon", "prev_gap_len_l", "days_since_return_l", "tw_hr_elev")))))
+
+  an <- c("main", "trailing_baseline", "exclude_partial_wear", "first_gap_only", "conditional_logit", "cluster_robust_logit", "spline_vs_linear")
+  at <- CJ(stream = "activity", analysis = an, term = c("w_act_steps", "w_act_sedentary"))[, `:=`(estimate = 0.1, or = 1.1, or_low = 1.0, or_high = 1.2)]
+  at[analysis == "trailing_baseline", term := sub("^w_", "tw_", term)]; at[analysis == "spline_vs_linear", `:=`(estimate = NA_real_, or = NA_real_)]
+  p <- plot_sensitivity_forest_stream(at, "activity", cfg); built(p)
+  d <- ggplot2::ggplot_build(p)$plot$data
+  expect_false("spline_vs_linear" %in% d$analysis); expect_match(levels(d$panel)[1L], "pre-specified test")
+  expect_equal(uniqueN(d$panel), 2L); expect_null(plot_sensitivity_forest_stream(at, "sleep", cfg))
+
+  ba <- CJ(stream = "activity", model_id = names(GAPB_LABELS), term = c("log2_gap", "age10", "cohortDiabetes"))[, `:=`(estimate = -0.02, se = 0.01, conf_low = -0.04, conf_high = 0)]
+  ba <- rbind(ba, data.table(stream = "activity", model_id = "B_back2_adj_pre", term = "w_pre_day_steps", estimate = 0.1, se = 0.01, conf_low = 0.08, conf_high = 0.12))
+  p <- plot_gapB_forest(ba, "activity", cfg); built(p); expect_equal(uniqueN(ggplot2::ggplot_build(p)$plot$data$panel), 4L)
+  ca <- CJ(stream = "activity", model_id = names(GAPC_LABELS), term = c("w_pre_day_steps", "age10"))[, `:=`(estimate = 0.1, se = 0.02, or = 0.9, or_low = 0.85, or_high = 0.95)]
+  p <- plot_gapC_forest(ca, "activity", cfg); built(p); expect_null(plot_gapC_forest(ca[0L], "activity", cfg))
+
+  dec <- CJ(stream = "activity", cohort = cfg$cohorts, decile = 1:10)[, `:=`(rate = 0.05 - 0.002 * decile, rate_low = 0.04 - 0.002 * decile, rate_high = 0.06 - 0.002 * decile)]
+  p <- plot_onset_deciles(dec, "activity", cfg); built(p, sized = FALSE)
+  expect_true("GeomPointrange" %in% geoms(p)); expect_true("GeomBoxplot" %in% geoms(plot_onset_deciles(dec, "activity", make_config(list(plot = list(interval_style = "box"))))))
+  expect_null(plot_onset_deciles(dec, "hr", cfg))
 })
 
 test_that("violin figures with more than 12 violins in total are placed in 2 or 3 rows with a size that follows the layout", {

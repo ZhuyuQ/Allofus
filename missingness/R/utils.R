@@ -261,7 +261,7 @@ ckpt_hash <- function(x) {
 # made with another sample size are re-run, while Cell 17's exploratory sample does not hide the
 # full-data results of the other models.
 ckpt_cfg_part <- function(cfg, kind) {
-  core <- cfg[c("predictors", "own_predictors", "activity_predictors", "seed", "cohorts", "overlap")]
+  core <- cfg[c("predictors", "own_predictors", "activity_predictors", "seed", "cohorts", "reference_cohort", "overlap")]
   model_part <- cfg$model[c("engine", "nAGQ", "min_events", "min_persons_with_events")]
   if (kind %in% c("gapB", "gapC")) return(c(core, list(gap_models = cfg$gap_models, boot = cfg$boot,
                                                       predict = cfg$predict, kind = kind)))
@@ -436,4 +436,11 @@ fingerprint_table <- function(dt) {
   list(n_rows = nrow(dt), n_persons = if ("person_id" %in% names(dt)) uniqueN(dt$person_id) else NA_integer_,
        dates = if ("date" %in% names(dt)) as.character(range(dt$date)) else NULL,
        sums = vapply(num, function(cl) signif(sum(as.numeric(dt[[cl]]), na.rm = TRUE), 8L), numeric(1)))
+}
+
+# `cohort` as a model factor: the reference cohort (cfg$reference_cohort, Healthy) is the first level, so every cohort
+# coefficient is a comparison with it; the other cohorts keep the order of cfg$cohorts.
+cohort_factor <- function(x, cfg) {
+  ref <- cfg$reference_cohort %||% cfg$cohorts[1L]
+  factor(as.character(x), levels = c(ref, setdiff(cfg$cohorts, ref)))
 }

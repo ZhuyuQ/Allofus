@@ -136,7 +136,7 @@ prepare_stream_bundle <- function(stream, day_tables, persons, cfg, observed_fil
   rm(own_tab)
 
   # person covariates
-  cov <- persons[, .(person_id, cohort, sex2 = factor(as.character(sex), levels = c("Female", "Male")),
+  cov <- persons[, .(person_id, cohort = cohort_factor(cohort, cfg), sex2 = factor(as.character(sex), levels = c("Female", "Male")),
                      age10 = (age_first - 60) / 10)]
   add_columns(cov, "person_id")
   setkey(rs, person_id, date)

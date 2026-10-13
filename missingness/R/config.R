@@ -19,6 +19,7 @@ make_config <- function(overrides = list()) {
     # `cohort_prefix` maps the cohort label to the prefix used in the bucket
     # paths (Prostate is stored as `pca_*`).
     cohorts       = c("Insomnia", "Diabetes", "Healthy", "Prostate"),
+    reference_cohort = "Healthy",   # the reference level of `cohort` in every model (other cohorts are compared with it)
     cohort_prefix = c(Insomnia = "insomnia", Diabetes = "diabetes",
                       Healthy  = "healthy",  Prostate = "pca"),
 
@@ -176,7 +177,8 @@ make_config <- function(overrides = list()) {
                     Other = "#95A5A6")
     ),
     plot = list(dpi = 150,
-                interval_style = "box")   # estimates with intervals: "box" = line + 50% box + 95% whiskers; "se" = dot +/- 1 SD (standard error); "ci95" = dot + 95% interval
+                interval_style = "se",       # model figures: "se" = dot +/- 1 SD (standard error); "ci95" = dot + 95% interval; "box" = line + 50% box + 95% whiskers
+                transition_style = "box")    # the cohort transition-probability figure only (same three choices)
   )
   utils::modifyList(cfg, overrides)
 }

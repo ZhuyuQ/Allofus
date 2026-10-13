@@ -75,6 +75,15 @@ test_that("sensitivity analyses are separate units, agree with the main estimate
   expect_true(all(abs(est - sens[analysis == "main", estimate]) < 0.25))
   expect_gt(sens[analysis == "spline_vs_linear", p], 0.01)   # truth is linear
   expect_equal(nrow(got$sensitivity_failures), 0L)
+  expect_equal(sens[, .N, by = analysis]$N, rep(1L, uniqueN(sens$analysis)))              # `sensitivity` = the tested term only, one row per analysis
+  expect_false("tested" %in% names(sens))
+  at <- got$sensitivity_all_terms                                                          # every within-person term of the estimators
+  for (a in c("main", "exclude_partial_wear", "first_gap_only", "conditional_logit", "cluster_robust_logit"))
+    expect_setequal(at[analysis == a, term], c("w_act_steps", "w_act_sedentary", "w_act_mvpa"))
+  expect_setequal(at[analysis == "trailing_baseline", term], c("tw_act_steps", "tw_act_sedentary", "tw_act_mvpa"))
+  expect_equal(at[analysis == "main" & term == "w_act_steps", estimate], sens[analysis == "main", estimate])
+  expect_true(all(at[!is.na(estimate) & grepl("w_", term), or] == exp(-at[!is.na(estimate) & grepl("w_", term), estimate])))   # OR per 1 SD below usual
+  expect_false(any(at$analysis %in% c("spline_vs_linear", "random_slope")))                # tests, not estimates
   again <- suppressMessages(run_sensitivity_stage("activity", lazy(function() stop("must not be built")), NULL, prim, s$cfg, ck, dk))
   expect_true(all(again == "resumed"))                        # nothing is refitted and the bundle is never built
 })
@@ -170,4 +179,31 @@ test_that("a singular lme4 fit counts as converged (and is flagged singular), a 
   fake <- fit; fake@optinfo$conv$lme4 <- list(messages = "Model failed to converge with max|grad| = 0.5")
   expect_false(lme4_converged(fake))
   fake2 <- fit; fake2@optinfo$conv$opt <- 1L; expect_false(lme4_converged(fake2))
+})
+
+test_that("observed gap rate by decile of the primary term: ten deciles per cohort, rate falls as the prior day gets more active when the effect is negative", {
+  s <- small_study(-0.8)
+  dec <- onset_deciles(s$b, s$cfg)
+  expect_true(all(c("cohort", "decile", "mean_z", "n_rows", "n_events", "n_persons", "rate", "rate_low", "rate_high") %in% names(dec)))
+  expect_equal(max(dec$decile), 10L)
+  expect_equal(sum(dec$n_rows), sum(!is.na(s$b$rs$w_act_steps) & !is.na(s$b$rs$y_ge1)))        # every row at risk is in exactly one decile
+  expect_equal(sum(dec$n_events), sum(s$b$rs$y_ge1[!is.na(s$b$rs$w_act_steps)], na.rm = TRUE))
+  expect_true(all(dec$rate_low <= dec$rate + 1e-12 & dec$rate <= dec$rate_high + 1e-12, na.rm = TRUE))
+  expect_lt(cor(dec[, .(r = weighted.mean(rate, n_rows)), by = decile]$r, 1:10), -0.5)         # lower activity -> more gaps
+  expect_equal(nrow(onset_deciles(list(rs = s$b$rs[0L]), s$cfg)), 0L)
+})
+
+test_that("Healthy is the reference cohort in every model: it is the first level, no Healthy coefficient exists, and the setting is part of the checkpoint key", {
+  s <- small_study(-0.5)
+  expect_equal(levels(cohort_factor(c("Prostate", "Healthy"), s$cfg)), c("Healthy", "Insomnia", "Diabetes", "Prostate"))
+  expect_equal(levels(s$b$rs$cohort)[1L], "Healthy")
+  r <- fit_onset_spec(s$b, primary_spec(s$cfg), s$cfg)
+  expect_setequal(grep("^cohort", r$coef$term, value = TRUE), c("cohortInsomnia", "cohortDiabetes", "cohortProstate"))
+  g <- build_gap_level_data(s$inp$day_tables$activity, s$inp$day_tables$activity, s$inp$persons, s$cfg)
+  expect_equal(levels(g$cohort)[1L], "Healthy"); expect_equal(gap_adjusters(g), c("cohort", "age10", "sex2"))
+  cfg2 <- s$cfg; cfg2$reference_cohort <- "Diabetes"
+  expect_false(identical(ckpt_cfg_part(s$cfg, "onset"), ckpt_cfg_part(cfg2, "onset")))        # old checkpoints (other reference) are not reused
+  expect_false(identical(ckpt_cfg_part(s$cfg, "gapB"), ckpt_cfg_part(cfg2, "gapB")))
+  fit_d <- fit_onset_spec(s$b, primary_spec(s$cfg), s$cfg, variant = list(cohort = "Prostate"))   # a cohort-specific fit still works with a factor
+  expect_equal(fit_d$info$cohort_stratum, "Prostate")
 })

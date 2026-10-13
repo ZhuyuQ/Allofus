@@ -79,6 +79,18 @@ test_that("results collect into tables, curves and predicted probabilities that 
   b <- r$model_B_post_gap_activity[model_id == "B_back2_unadj"]                      # the curve is the fitted line
   expect_equal(cv$est[cv$gap_length == 2] - cv$est[cv$gap_length == 1], b$estimate, tolerance = 1e-6)
   expect_true(all(r$model_B_observed$n_gaps > 0))
+  ba <- r$model_B_all_terms                                                          # every fixed effect (no intercept) of each specification
+  expect_false("(Intercept)" %in% ba$term)
+  expect_setequal(ba[model_id == "B_back2_unadj", term], "log2_gap")
+  expect_true(all(c("log2_gap", "w_pre_day_steps") %in% ba[model_id == "B_back2_adj_pre", term]))
+  expect_equal(ba[model_id == "B_back2_unadj" & term == "log2_gap", estimate], b$estimate)    # same estimate as the one-row table
+  expect_true(all(ba$conf_low < ba$estimate & ba$estimate < ba$conf_high))
+  ca <- r$model_C_all_terms
+  if (nrow(ca) > 0L) {
+    expect_false(any(grepl("\\|", ca$term)))                                         # thresholds are not predictors
+    cc1 <- r$model_C_gap_length[model_id == "C_unadj" & status %in% c("ok", "ok_bootstrap_se")]
+    if (nrow(cc1)) expect_equal(ca[model_id == "C_unadj" & term == "w_pre_day_steps", or], cc1$or)
+  }
   pr <- r$model_C_predicted_probs
   if (nrow(pr) > 0L) {
     sums <- pr[, .(s = sum(prob)), by = .(model_id, within_z)]

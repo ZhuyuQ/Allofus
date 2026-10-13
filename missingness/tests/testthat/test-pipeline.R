@@ -87,6 +87,10 @@ test_that("pipeline writes tables, figures and metadata; primary effect recovere
   expect_true(all(file.exists(file.path(out, "tables", c("cohort_missingness.tsv", "transition.tsv", "weekday_tests.tsv",
                                                           "metric_summary.tsv", "onset_coefficients.tsv", "primary_test.tsv")))))
   expect_true(file.exists(file.path(out, "figures", "missing_pct_by_cohort.png")))
+  # one forest plot with all predictors, and one observed-rate (decile) figure, per stream - and the table behind the latter
+  expect_true(all(file.exists(file.path(out, "figures", paste0(rep(c("onset_forest_year_", "onset_forest_other_", "onset_deciles_"), each = 3L), c("activity", "sleep", "hr"), ".png")))))
+  expect_true(file.exists(file.path(out, "tables", "onset_deciles.tsv"))); expect_setequal(res$onset_deciles$stream, c("activity", "sleep", "hr"))
+  expect_match(paste(readLines(file.path(out, "figures", "figure_captions.md")), collapse = " "), "part 2 of 2")
   expect_true(all(file.exists(file.path(out, c("run_config.json", "session_info.txt", "input_manifest.tsv")))))
   expect_equal(nrow(res$primary_test), 3L)
   expect_true(all(res$primary_test$or > 1 & res$primary_test$p_holm < 0.05))
@@ -169,6 +173,9 @@ test_that("results accumulate across calls: gap-length models, sensitivity files
   expect_setequal(r$model_B_post_gap_activity$stream, c("activity", "sleep"))
   expect_setequal(fread(file.path(out, "tables", "model_B_post_gap_activity.tsv"))$stream, c("activity", "sleep"))
   expect_setequal(fread(file.path(out, "tables", "model_C_gap_length.tsv"))$stream, c("activity", "sleep"))
+  expect_true(file.exists(file.path(out, "tables", "model_B_all_terms.tsv")))
+  expect_true(all(file.exists(file.path(out, "figures", c("gapB_forest_activity.png", "gapB_forest_sleep.png")))))      # one forest plot of all predictors per stream
+  expect_setequal(r$model_B_all_terms$stream, c("activity", "sleep"))
 
   # a different sample size (the speed knob for exploratory models) must not hide earlier results
   r1 <- NULL; quiet(r1 <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, out, stages = "onset", onset_roles = "primary", model_streams = "activity"))
@@ -204,4 +211,16 @@ test_that("the 'missing_figures' stage redraws the missingness summaries only: n
   expect_equal(readLines(file.path(out, "results_summary.md")), "sentinel")                  # results summary not overwritten
   expect_false(any(c("transition", "weekday_tests", "metric_summary", "onset_coefficients") %in% names(res)))
   expect_match(paste(readLines(file.path(out, "figures", "figure_captions.md")), collapse = " "), "5-year moving window")
+})
+
+test_that("the sensitivity stage writes the all-predictor table and one forest plot per stream", {
+  cfg <- cfg_test()
+  inp <- suppressMessages(simulate_inputs(cfg, n_per_cohort = c(Insomnia = 60, Diabetes = 60, Healthy = 120, Prostate = 30), seed = 5))
+  out <- tempfile(); r <- NULL
+  invisible(suppressWarnings(suppressMessages(capture.output(r <- run_missingness_pipeline(
+    inp$day_tables, inp$persons, cfg, out, stages = "sensitivity", model_streams = "activity")))))
+  expect_true(all(file.exists(file.path(out, "tables", c("sensitivity.tsv", "sensitivity_all_terms.tsv")))))
+  expect_true(file.exists(file.path(out, "figures", "sensitivity_forest_activity.png")))
+  expect_true(file.exists(file.path(out, "figures", "forest_sensitivity.png")))
+  expect_gt(nrow(r$sensitivity_all_terms), nrow(r$sensitivity[!analysis %in% c("spline_vs_linear", "random_slope")]))
 })
