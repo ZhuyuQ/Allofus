@@ -178,7 +178,8 @@ make_config <- function(overrides = list()) {
     ),
     plot = list(dpi = 150,
                 interval_style = "se",       # model figures: "se" = dot +/- 1 SD (standard error); "ci95" = dot + 95% interval; "box" = line + 50% box + 95% whiskers
-                transition_style = "box")    # the cohort transition-probability figure only (same three choices)
+                transition_style = "box",    # the cohort transition-probability figure only (same three choices)
+                gap_days = c(1L, 2L, 3L, 5L, 13L))   # gap lengths (days) shown in the model B figure `gap_dose_response`
   )
   utils::modifyList(cfg, overrides)
 }

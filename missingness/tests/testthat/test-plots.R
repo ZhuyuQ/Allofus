@@ -46,7 +46,11 @@ test_that("model-result figures draw from saved result tables and are labelled h
                     lo = c(-0.05, -0.08, -0.12, -0.3), hi = c(0.05, 0.04, 0.04, 0.1), n_gaps = c(300L, 150L, 60L, 10L))
   ok(plot_gap_dose_response(curve, obs, cfg))
   gb <- vapply(plot_gap_dose_response(curve, obs, cfg)$layers, function(l) class(l$geom)[1L], "")
-  expect_true("GeomCol" %in% gb); expect_false("GeomLine" %in% gb); expect_false("GeomRibbon" %in% gb)    # bars, not lines
+  expect_true("GeomPointrange" %in% gb); expect_false(any(c("GeomCol", "GeomLine", "GeomRibbon") %in% gb))       # forest rows, not bars or lines
+  dd <- ggplot2::ggplot_build(plot_gap_dose_response(curve, obs, cfg))$plot$data
+  expect_equal(sort(as.integer(as.character(unique(dd$day)))), c(1L, 2L, 3L, 5L, 13L))                      # only these gap lengths
+  expect_equal(nrow(dd), 5L * 2L); expect_setequal(as.character(dd$model), c("Unadjusted", "Adjusted"))   # each with an unadjusted and an adjusted estimate
+  expect_true("GeomBoxplot" %in% vapply(plot_gap_dose_response(curve, obs, make_config(list(plot = list(interval_style = "box"))))$layers, function(l) class(l$geom)[1L], ""))
   pred <- CJ(stream = "activity", adjusted = TRUE, within_z = c(-1, 0, 1), length_group = factor(c("1", "2", "3+"), ordered = TRUE))[
     , `:=`(prob = 1 / 3, prob_low = 0.25, prob_high = 0.4)]
   ok(plot_ordinal_probs(pred, cfg))

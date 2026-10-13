@@ -413,33 +413,28 @@ plot_cohort_forest <- function(cohort_specific, cohort_interaction, cfg,
     theme_bw(base_size = 11) + theme(strip.text = element_text(face = "bold"))
 }
 
-# Model B: estimated mean activity on the first full day back, for each gap length 1 .. cfg$predict$gap_curve_max, as
-# side-by-side bars (one colour per specification: unadjusted / adjusted) with the interval of the estimate
-# (cfg$plot$interval_style; the box style is drawn as the 95% interval). Grey dots are the observed group means with a
-# person-clustered 95% interval, placed at each group's median gap length.
-plot_gap_dose_response <- function(curve, observed, cfg,
+# Model B: estimated mean activity on the first full day back at a few gap lengths (cfg$plot$gap_days: 1, 2, 3, 5 and 13 days),
+# one forest row per gap length with two colours - the unadjusted and the adjusted fit - and the interval of the estimate
+# (cfg$plot$interval_style). The values are the fitted straight line in log2(gap length) of each specification, so they are
+# the model's estimates at those lengths (0 = the person's usual activity).
+plot_gap_dose_response <- function(curve, observed = NULL, cfg,
                                    title = "Activity After a Gap, by How Long the Gap Was") {
-  lab <- c(B_back2_unadj = "Unadjusted", B_back2_adj = "Adjusted (cohort, age, sex)")
-  cv <- curve[model_id %in% names(lab)][, model := factor(lab[model_id], levels = lab)]
+  lab <- c(B_back2_unadj = "Unadjusted", B_back2_adj = "Adjusted")
+  days <- cfg$plot$gap_days %||% c(1L, 2L, 3L, 5L, 13L)
+  cv <- curve[model_id %in% names(lab) & gap_length %in% days][, model := factor(lab[model_id], levels = lab)]
+  cv[, day := factor(gap_length, levels = rev(sort(unique(gap_length))))]
   style <- cfg$plot$interval_style %||% "se"
   add_interval_columns(cv, "est", "lo", "hi", style = style)
-  ob <- observed[model_id == "B_back2_unadj"][, n_lab := paste0("n=", format(n_gaps, big.mark = ","))]
-  dg <- position_dodge(width = 0.8)
-  ggplot() +
-    geom_hline(yintercept = 0, color = "gray40") +
-    geom_col(data = cv, aes(x = gap_length, y = est_, fill = model), width = 0.75, alpha = 0.8, position = dg) +
-    geom_errorbar(data = cv, aes(x = gap_length, ymin = lo_, ymax = hi_, group = model), width = 0.25, color = "gray20",
-                  position = dg, linewidth = 0.4) +
-    geom_pointrange(data = ob, aes(x = x, y = mean, ymin = lo, ymax = hi), color = "gray20", size = 0.3) +
-    geom_text(data = ob, aes(x = x, y = -Inf, label = n_lab), vjust = -0.6, size = 2.6, color = "gray30") +
-    facet_wrap(~stream, ncol = 1, scales = "free_y") +
-    scale_x_continuous(breaks = sort(unique(cv$gap_length))) +
-    scale_fill_manual(values = c("#2C3E50", "#E74C3C")) +
+  cols <- c("#2C3E50", "#E74C3C")
+  ggplot(cv, aes(x = est_, y = day, color = model, fill = model)) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "gray40") +
+    interval_layer(style, horizontal = TRUE, color_var = "model", width = 0.6, position = position_dodge(width = 0.7)) +
+    facet_wrap(~stream, ncol = 1, scales = "free_x") +
+    scale_color_manual(values = cols) + scale_fill_manual(values = cols) +
+    guides(color = guide_legend(reverse = TRUE), fill = guide_legend(reverse = TRUE)) +
     labs(title = title,
-         x = "Gap length (days)",
-         y = "Activity on first full day back\n(SD from the person's usual)", fill = NULL,
-         caption = paste0("Bar: model estimate; error bar: ", c(se = "+/- 1 SD of the estimate (standard error)", ci95 = "95% interval")[[if (identical(style, "se")) "se" else "ci95"]],
-                          ". Grey dots: observed group means (95% CI)")) +
+         x = "Activity on first full day back (SD from the person's usual); 0 = usual", y = "Gap length (days)",
+         color = NULL, fill = NULL, caption = interval_caption(style)) +
     theme_bw(base_size = 11) + theme(strip.text = element_text(face = "bold"), legend.position = "bottom")
 }
 
@@ -647,12 +642,12 @@ figure_captions <- function() c(
   "gapC_forest_*" = "Model C of this stream (exploratory; only where proportional odds held): every coefficient of the ordinal mixed model as an odds ratio of a LONGER gap (steps the day before the gap per 1 SD below usual; age per 10 years; cohorts against Healthy, sex against Female).",
   "onset_deciles_*" = "Observed, model-free % of days followed by a gap, by decile of yesterday's within-person steps (1 = lowest relative to the person's usual), one line per cohort; the deciles are cut over all days at risk. Unadjusted; it shows the shape of the association that the odds ratio summarises (a falling line = lower-than-usual days precede gaps more often). Intervals respect several days per person (person-clustered).",
   forest_sensitivity = "The primary effect under different assumptions (trailing 14-day baseline, no partial-wear days, first gap only, main-sleep-only, conditional logit, cluster-robust SE). Spline and random-slope analyses are likelihood-ratio tests and are listed in sensitivity.tsv, not drawn here.",
-  gap_dose_response = "Model B (exploratory). Mean activity on the first full day after a gap (SD from the person's usual) for each gap length: bars = the model's fitted value (straight line in log2(gap length)), one colour for the unadjusted and one for the adjusted fit, with the interval of the estimate; grey dots = observed group means with person-clustered 95% CI. Conditional on a gap having occurred.",
+  gap_dose_response = "Model B (exploratory). Estimated mean activity on the first full day after a gap (SD from the person's usual) at gap lengths of 1, 2, 3, 5 and 13 days, one row per length, dark = unadjusted fit, red = adjusted fit (cohort, age, sex), with the interval of the estimate. The values come from the fitted straight line in log2(gap length), so they are model estimates at those lengths, not group means (observed group means are in model_B_observed.tsv). Conditional on a gap having occurred.",
   gap_length_probs = "Model C (exploratory, shown only where proportional odds held). Population-average probability of each gap-length group when the day before the gap was 1 SD below / at / 1 SD above usual steps, with 95% intervals. Not shown for streams where proportional odds was rejected (see model_C_gap_length.tsv)."
 )
 
 # figures that show an estimate with an interval (see interval_layer); `*_` entries match every figure with that prefix
-INTERVAL_FIGURES <- c("transition", "onset_primary_forest", "forest_gap_definition", "cohort_forest", "forest_sensitivity", "gap_length_probs",
+INTERVAL_FIGURES <- c("transition", "onset_primary_forest", "forest_gap_definition", "gap_dose_response", "cohort_forest", "forest_sensitivity", "gap_length_probs",
                       "onset_forest_year_", "onset_forest_other_", "sensitivity_forest_", "gapB_forest_", "gapC_forest_", "onset_deciles_")
 interval_note <- function(style = "se") {
   if (identical(style, "box")) " One box per estimate: line = estimate, box = central 50% interval, whiskers = 95% interval - the uncertainty of the estimate, not the spread of the data (the 50% interval is derived from the 95% interval, exact for a normal sampling distribution). cfg$plot$interval_style = \"se\" (dot +/- 1 SD) or \"ci95\" (dot + 95% interval) draws the alternatives."
