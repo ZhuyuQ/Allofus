@@ -53,6 +53,33 @@ make_config <- function(overrides = list()) {
                       date_col = "date",       col_classes = c(zone_name = "character"))
     ),
     meta_stem = "meta",   # person table export (always sharded)
+    device_stem = "device",   # optional Fitbit device export (device_version, src_id; always sharded; see bq_export.R)
+
+    # ---- Fitbit device information (optional export of Cell 6c, built into L1 by run_etl_device) ----
+    # families: regular expressions on device_version, the FIRST match wins; any other wearable is `other_label`.
+    # Fitbit scales (device_type SCALE) are not wearables: a person with only a scale has no wearable device version.
+    #   forms: how a device version is worn (first match wins; anything else is "unclassified"). Only the forms in `wrist_forms`
+    #   count as WATCH data: "smartwatch" and "band" = worn on the wrist; "clip-on" (One, Zip, Ultra, Classic) and "phone"
+    #   (MobileTrack, tracking by the phone app) are not. Use wrist_forms = "smartwatch" for smartwatches only, or add "clip-on".
+    device = list(
+      forms       = list(smartwatch = "^(Versa|Sense|Ionic|Blaze|Surge|Google Pixel Watch)",
+                         band       = "^(Charge|Alta|Inspire|Flex|Force|Luxe|Ace)",
+                         `clip-on`  = "^(One|Zip|Ultra|Classic)$",
+                         phone      = "^MobileTrack"),
+      wrist_forms = c("smartwatch", "band"),
+      families    = c(Charge = "^Charge", Versa = "^Versa", Sense = "^Sense", Inspire = "^Inspire", Alta = "^Alta", Luxe = "^Luxe"),
+      other_label = "Other wrist-worn",
+      scale_types = "SCALE",
+      missing_label = "Missing",
+      mc_B   = 10000L,       # Monte-Carlo replicates for the p value of the composition chi-square (sparse cells)
+      boot_B = 1000L         # bootstrap replicates for the interval of Cramer's V
+    ),
+
+    # ---- person-level % of days missing against every model variable (stage "variables") ----
+    outcome_vars = list(min_n = 5L,          # levels with fewer people are drawn but not tested
+                        boot_B = 300L,       # bootstrap replicates for the interval of the effect size (epsilon-squared / Cliff's delta)
+                        bins = 10L,          # quantile bins of a continuous variable (bin mean +/- 95% interval)
+                        points_max = 4000L), # people drawn as background points of a scatter (seeded sample; tests use everybody)
 
     # ---- storage of the compact day tables (L1) ------------------------------
     # "auto" = Parquet if the `arrow` package is installed, otherwise RDS.
@@ -94,6 +121,23 @@ make_config <- function(overrides = list()) {
     # (within-person prior-day steps, in the joint adjusted >=1-day model).
     primary_term = "w_act_steps",
 
+    # ---- standardization of the predictors (within- and between-person z-scores) -------------------
+    # "pre_gap" (primary): the person's "usual" on day d is the mean of the person's OBSERVED days BEFORE d (an expanding
+    #   history), so nothing observed after day d - in particular nothing from the gap that may start on d + 1 or from
+    #   later days - enters the within-person (w_) or between-person (b_) z-score of day d. A day needs at least
+    #   `baseline_min_n` earlier observed days to have a baseline; without it the day is not in the model.
+    # "full_period" (sensitivity only): the person's usual is the mean over the whole observation period (look-ahead).
+    standardization = list(method = "pre_gap", baseline_min_n = 7L),
+
+    # ---- wear consistency (stratified analysis at the end of the workflow) --------------------------
+    # wear consistency of a person in a stream = observed-day coverage = observed days / days between the person's first
+    # and last record in that stream. "median": consistent = coverage >= the stream's median over the analysed people;
+    # "fixed": consistent = coverage >= `threshold`. The rule is fixed here, BEFORE any stratified model is fitted.
+    wear = list(method = "median", threshold = 0.90,
+                onset_roles = "primary",       # onset models fitted within each stratum ("secondary_threshold" adds model D)
+                min_persons_stratum = 100L,    # a stratum with fewer people is described but not modelled
+                epv_min = 10),                 # events per estimated coefficient below this = "sparse" flag
+
     # ---- onset-model settings ------------------------------------------------
     onset = list(
       primary_k         = 1L,              # a gap = at least 1 missing day
@@ -116,6 +160,7 @@ make_config <- function(overrides = list()) {
       nAGQ                    = 0L,          # only used when engine == "lme4"
       min_events              = 100L,        # below this a model is "not estimable"
       min_persons_with_events = 30L,
+      year_min_events         = 10L,         # calendar years with fewer gap starts are pooled with a neighbouring year (reference = year with most gap starts)
       sample_persons          = NULL,        # NULL = everybody. e.g. 2000 -> fit on a seeded random sample
                                              # of people (an explicit choice: it changes the estimate's precision)
       # speed knob: fit only the EXPLORATORY specs on a seeded sample of people (NULL = all people)
@@ -174,7 +219,9 @@ make_config <- function(overrides = list()) {
       cci       = c("0" = "#27AE60", "1-2" = "#F39C12", "3-4" = "#E67E22", ">=5" = "#E74C3C"),
       race      = c(White = "#3498DB", `Black or African American` = "#E67E22",
                     Asian = "#27AE60", `More than one population` = "#8E44AD",
-                    Other = "#95A5A6")
+                    Other = "#95A5A6"),
+      device    = c(Missing = "#E5E5E5", Charge = "#0072B2", Versa = "#E69F00", Sense = "#009E73", Inspire = "#CC79A7",
+                    Alta = "#56B4E9", Luxe = "#D55E00", `Other wrist-worn` = "#7F7F7F")
     ),
     plot = list(dpi = 150,
                 interval_style = "se",       # model figures: "se" = dot +/- 1 SD (standard error); "ci95" = dot + 95% interval; "box" = line + 50% box + 95% whiskers

@@ -1,20 +1,48 @@
 # ==============================================================================
 # predictors.R
 # ------------------------------------------------------------------------------
-# Build the prior-day predictors for the gap-onset models.
+# Build the prior-day predictors for the gap-onset models (and the gap-level models B and C).
 #
-# For every predictor p (e.g. log steps) we create, per observed day:
+# For every predictor p (e.g. log steps) we create, per observed day d of a person:
 #   x_p   the transformed value
-#   w_p   WITHIN-person deviation:   (x - person's own mean) / pooled within-person SD
-#         "how unusual was yesterday for THIS person" (primary predictor)
-#   b_p   BETWEEN-person level:      (person's mean - average person) / SD of person means
-#         "is this person generally high or low" (keeps the two effects apart)
-#   tw_p  same as w_p but using the person's TRAILING baseline (mean of the previous
-#         14 observed days) instead of the whole-follow-up mean (sensitivity: no look-ahead)
+#   m_p   the person's USUAL level on day d (the baseline, see below)
+#   w_p   WITHIN-person deviation:  (x - m) / sd_w      "how much higher than THIS person's usual was day d"
+#         (+1 = one within-person SD above usual; the primary predictor)
+#   b_p   BETWEEN-person level:     (m - mu_b) / sd_b   "is this person generally higher or lower than other people"
+#   tw_p  like w_p but with the TRAILING baseline (mean of the previous 14 observed days; sensitivity)
+# so that x = m + sd_w * w and m = mu_b + sd_b * b: the two parts add up to the day's value and are separate effects.
 #
-# Scaling constants are computed once on the pooled data of the stream and stored in
-# attr(result, "scales"), so odds ratios are "per 1 within-person SD" everywhere.
+# standardization = "pre_gap" (primary, cfg$standardization$method)
+#   m = mean of the person's observed days STRICTLY BEFORE d (expanding history; needs >= baseline_min_n of them, else NA).
+#   Only data observed before day d - hence before any gap that starts on d + 1 - enter the person's usual, so the
+#   within- and between-person z-scores carry no information from the future of that person.
+#   sd_w = root mean square of (x - m) over all days that have a baseline ("pooled within-person SD about the prior usual");
+#   mu_b, sd_b = mean and SD of m over those same days (the reference distribution of the between-person level).
+#   sd_w, mu_b, sd_b are one constant per predictor and stream: they only rescale, they never move a person's own
+#   values, and they are stored in attr(result, "scales").
+# standardization = "full_period" (sensitivity only)
+#   m = mean over ALL of the person's observed days (includes days after d: look-ahead); sd_w = pooled within-person SD,
+#   mu_b, sd_b = mean and SD of the person means over persons. This was the specification before the pre-gap change.
 # ==============================================================================
+
+# Mean of the observed values BEFORE each position (the position itself excluded; NA values ignored), NA until at least
+# `min_n` observed values are available. Cumulative sums: linear time, no rolling-window function.
+prior_mean <- function(x, min_n) {
+  ok <- !is.na(x)
+  cs <- cumsum(ifelse(ok, x, 0)); cn <- cumsum(ok)
+  s_prev <- c(0, cs[-length(cs)]); n_prev <- c(0L, cn[-length(cn)])
+  out <- s_prev / n_prev
+  out[n_prev < min_n] <- NA_real_
+  out
+}
+
+# Same, but the position itself is included (the person's usual as known at the END of that day).
+through_mean <- function(x, min_n) {
+  ok <- !is.na(x)
+  out <- cumsum(ifelse(ok, x, 0)) / cumsum(ok)
+  out[cumsum(ok) < min_n] <- NA_real_
+  out
+}
 
 # Mean of the previous `n` observations (today excluded; NA values ignored), NA until at
 # least `min_n` non-missing values are available. Cumulative sums, so no rolling-window
@@ -35,7 +63,13 @@ trailing_mean_excl_current <- function(x, n, min_n) {
 # `pred_names` : predictor names (from cfg$predictors) that belong to this stream
 # trailing = FALSE skips the trailing-baseline columns (tw_); keep_x = FALSE drops the transformed
 # raw value (x_) once w_ and b_ are made. Both save memory; the models only need w_ and b_.
-predictor_table <- function(days, pred_names, cfg, trailing = TRUE, keep_x = TRUE) {
+# standardization : "pre_gap" (primary) or "full_period" (sensitivity); see the header of this file.
+# keep_baseline = TRUE (pre_gap only) also keeps m_<p> = the person's usual THROUGH day d (day d included): the
+#   baseline that is known when a gap starts on d + 1; the gap-level models standardize the days AFTER a gap with it.
+predictor_table <- function(days, pred_names, cfg, trailing = TRUE, keep_x = TRUE,
+                            standardization = cfg$standardization$method %||% "pre_gap", keep_baseline = FALSE) {
+  stopifnot(standardization %in% c("pre_gap", "full_period"))
+  min_n <- cfg$standardization$baseline_min_n %||% 7L
   dt <- days[, c("person_id", "date"), with = FALSE]
   scales <- vector("list", length(pred_names))
 
@@ -46,18 +80,26 @@ predictor_table <- function(days, pred_names, cfg, trailing = TRUE, keep_x = TRU
     x_nm <- paste0("x_", p)
     dt[, (x_nm) := apply_transform(days[[spec$col]], spec$transform)]
 
-    # person mean over the person's observed days
-    dt[, m_i := mean(get(x_nm), na.rm = TRUE), by = person_id]
-    dt[is.nan(m_i), m_i := NA_real_]
-
-    # pooled within-person SD and between-person SD (one constant per predictor)
-    dev  <- dt[[x_nm]] - dt$m_i
-    n_ok <- sum(!is.na(dev))
-    n_p  <- dt[!is.na(m_i), uniqueN(person_id)]
-    sd_w <- sqrt(sum(dev^2, na.rm = TRUE) / max(n_ok - n_p, 1L))
-    pm   <- unique(dt[!is.na(m_i), .(person_id, m_i)])
-    sd_b <- stats::sd(pm$m_i)
-    mu_b <- mean(pm$m_i)
+    if (standardization == "pre_gap") {
+      # usual = mean of the earlier observed days of the person; constants from the days that have such a baseline
+      dt[, m_i := prior_mean(get(x_nm), min_n), by = person_id]
+      dev  <- dt[[x_nm]] - dt$m_i
+      sd_w <- sqrt(mean(dev^2, na.rm = TRUE))
+      mu_b <- mean(dt$m_i, na.rm = TRUE)
+      sd_b <- stats::sd(dt$m_i, na.rm = TRUE)
+      if (keep_baseline) dt[, (paste0("m_", p)) := through_mean(get(x_nm), min_n), by = person_id]
+    } else {
+      # usual = mean over the person's whole observation period (look-ahead); constants over days / persons
+      dt[, m_i := mean(get(x_nm), na.rm = TRUE), by = person_id]
+      dt[is.nan(m_i), m_i := NA_real_]
+      dev  <- dt[[x_nm]] - dt$m_i
+      n_ok <- sum(!is.na(dev))
+      n_p  <- dt[!is.na(m_i), uniqueN(person_id)]
+      sd_w <- sqrt(sum(dev^2, na.rm = TRUE) / max(n_ok - n_p, 1L))
+      pm   <- unique(dt[!is.na(m_i), .(person_id, m_i)])
+      sd_b <- stats::sd(pm$m_i)
+      mu_b <- mean(pm$m_i)
+    }
 
     dt[, (paste0("w_", p)) := (get(x_nm) - m_i) / sd_w]
     dt[, (paste0("b_", p)) := (m_i - mu_b) / sd_b]
@@ -73,7 +115,7 @@ predictor_table <- function(days, pred_names, cfg, trailing = TRUE, keep_x = TRU
     dt[, m_i := NULL]
     if (!keep_x) dt[, (x_nm) := NULL]
     scales[[i]] <- data.table(predictor = p, sd_within = sd_w, sd_between = sd_b,
-                              mean_of_person_means = mu_b)
+                              mean_of_person_means = mu_b, standardization = standardization)
   }
   setattr(dt, "scales", rbindlist(scales))
   dt[]
@@ -100,7 +142,9 @@ partial_wear_flag <- function(days, rule) {
 # `observed_filter` (optional, e.g. "has_main_sleep") restricts which sleep/hr/activity
 # rows count as "observed" (used for the main-sleep-only sensitivity).
 # trailing = TRUE also builds the trailing-baseline columns (only the sensitivity analyses use them).
-prepare_stream_bundle <- function(stream, day_tables, persons, cfg, observed_filter = NULL, trailing = FALSE) {
+# standardization: "pre_gap" (primary) or "full_period" (the full-period sensitivity), see the header of this file.
+prepare_stream_bundle <- function(stream, day_tables, persons, cfg, observed_filter = NULL, trailing = FALSE,
+                                  standardization = cfg$standardization$method %||% "pre_gap") {
   days_full <- day_tables[[stream]]
   days <- if (is.null(observed_filter)) days_full
           else days_full[eval(str2lang(observed_filter), envir = days_full) %in% TRUE]
@@ -117,7 +161,7 @@ prepare_stream_bundle <- function(stream, day_tables, persons, cfg, observed_fil
 
   # own-stream predictors (computed on the stream's observed days)
   own_names <- cfg$own_predictors[[stream]]
-  own_tab   <- predictor_table(days, own_names, cfg, trailing = trailing, keep_x = FALSE)
+  own_tab   <- predictor_table(days, own_names, cfg, trailing = trailing, keep_x = FALSE, standardization = standardization)
   scales    <- attr(own_tab, "scales")
   own_tab[, pw_own := partial_wear_flag(days, cfg$onset$partial_wear[[stream]])]
   add_columns(own_tab, c("person_id", "date"))
@@ -125,7 +169,7 @@ prepare_stream_bundle <- function(stream, day_tables, persons, cfg, observed_fil
   # activity predictors for the cross-stream models
   if (stream != "activity") {
     act_days <- day_tables[["activity"]]
-    act_tab  <- predictor_table(act_days, cfg$activity_predictors, cfg, trailing = trailing, keep_x = FALSE)
+    act_tab  <- predictor_table(act_days, cfg$activity_predictors, cfg, trailing = trailing, keep_x = FALSE, standardization = standardization)
     act_tab[, pw_act := partial_wear_flag(act_days, cfg$onset$partial_wear$activity)]
     add_columns(act_tab, c("person_id", "date"))
     scales <- rbind(scales, attr(act_tab, "scales"))
@@ -142,5 +186,5 @@ prepare_stream_bundle <- function(stream, day_tables, persons, cfg, observed_fil
   setkey(rs, person_id, date)
 
   list(stream = stream, gaps = gaps, rs = rs, scales = scales,
-       n_persons = uniqueN(rs$person_id), trailing = trailing)
+       n_persons = uniqueN(rs$person_id), trailing = trailing, standardization = standardization)
 }

@@ -1,15 +1,3 @@
-small_study <- function(beta, seed = 7) {
-  cfg <- cfg_test()
-  inp <- simulate_inputs(cfg, n_per_cohort = c(Insomnia = 80, Diabetes = 80, Healthy = 160, Prostate = 40),
-                         beta = beta, seed = seed)
-  list(cfg = cfg, inp = inp,
-       b = suppressMessages(prepare_stream_bundle("activity", inp$day_tables, inp$persons, cfg, trailing = TRUE)))
-}
-primary_spec <- function(cfg, which_stream = "activity") {
-  g <- make_onset_grid(cfg)
-  g[g$stream == which_stream & g$role == "primary"]
-}
-
 test_that("grid has one primary spec per stream and the model-D thresholds", {
   g <- make_onset_grid(make_config())
   expect_equal(g[role == "primary", .N], 3L)
@@ -30,8 +18,10 @@ test_that("the primary model recovers a planted effect and finds nothing when th
   est <- r$coef[term == "w_act_steps"]
   expect_equal(r$info$status, "ok")
   expect_lt(abs(est$estimate - (-0.5)), 0.2); expect_lt(est$p, 0.001)
-  expect_gt(est$or, 1)                                       # OR per 1 SD BELOW usual
-  expect_equal(est$or, exp(-est$estimate))
+  expect_lt(est$or, 1)                                       # OR per +1 SD HIGHER than usual: higher steps, fewer gaps
+  expect_equal(est$or, exp(est$estimate)); expect_equal(est$or_low, exp(est$conf_low)); expect_equal(est$or_high, exp(est$conf_high))
+  expect_true(all(r$coef$or == exp(r$coef$estimate)))                  # one convention for every term: OR = exp(coefficient)
+  expect_true(all(r$coef[grepl("^[wb]_", term), or_unit] == "per +1 SD"))
 
   s0 <- small_study(beta = 0, seed = 8)
   r0 <- fit_onset_spec(s0$b, primary_spec(s0$cfg), s0$cfg)
@@ -65,12 +55,14 @@ test_that("sensitivity analyses are separate units, agree with the main estimate
   s <- small_study(-0.5); ck <- tempfile(); st <- as_day_store(s$inp$day_tables, s$inp$persons)
   dk <- data_key(st, "activity"); prim <- primary_spec(s$cfg)
   bundle <- lazy(function() s$b)
-  status <- suppressMessages(run_sensitivity_stage("activity", bundle, NULL, prim, s$cfg, ck, dk))
-  expect_true(all(status %in% c("computed")))
+  bundle_full <- lazy(function() suppressMessages(prepare_stream_bundle("activity", s$inp$day_tables, s$inp$persons, s$cfg, standardization = "full_period")))
+  status <- suppressMessages(run_sensitivity_stage("activity", bundle, NULL, prim, s$cfg, ck, dk, alt_full = bundle_full))
+  expect_true(all(status %in% c("computed"))); expect_true("full_period_standardization" %in% names(status))
   got <- collect_sensitivity_results(ck, s$cfg, list(activity = dk))
   sens <- got$sensitivity
-  expect_true(all(c("main", "trailing_baseline", "exclude_partial_wear", "first_gap_only",
+  expect_true(all(c("main", "full_period_standardization", "trailing_baseline", "exclude_partial_wear", "first_gap_only",
                     "conditional_logit", "cluster_robust_logit", "spline_vs_linear", "random_slope") %in% sens$analysis))
+  expect_true(nrow(got$sensitivity_collinearity) > 0L && all(c("analysis", "term", "vif_equiv", "flag") %in% names(got$sensitivity_collinearity)))
   est <- sens[analysis %in% c("main", "conditional_logit", "cluster_robust_logit", "trailing_baseline"), estimate]
   expect_true(all(abs(est - sens[analysis == "main", estimate]) < 0.25))
   expect_gt(sens[analysis == "spline_vs_linear", p], 0.01)   # truth is linear
@@ -78,13 +70,17 @@ test_that("sensitivity analyses are separate units, agree with the main estimate
   expect_equal(sens[, .N, by = analysis]$N, rep(1L, uniqueN(sens$analysis)))              # `sensitivity` = the tested term only, one row per analysis
   expect_false("tested" %in% names(sens))
   at <- got$sensitivity_all_terms                                                          # every within-person term of the estimators
-  for (a in c("main", "exclude_partial_wear", "first_gap_only", "conditional_logit", "cluster_robust_logit"))
-    expect_setequal(at[analysis == a, term], c("w_act_steps", "w_act_sedentary", "w_act_mvpa"))
-  expect_setequal(at[analysis == "trailing_baseline", term], c("tw_act_steps", "tw_act_sedentary", "tw_act_mvpa"))
+  within <- c("w_act_steps", "w_act_sedentary", "w_act_mvpa")
+  for (a in c("main", "exclude_partial_wear", "first_gap_only", "cluster_robust_logit"))
+    expect_true(all(c(within, "b_act_steps", "cohortInsomnia", "age10", "dow_tMon", "prev_gap_len_l") %in% at[analysis == a, term]) || a == "first_gap_only")   # ALL terms, not only the tested one
+  expect_true(all(within %in% at[analysis == "conditional_logit", term]))
+  expect_false(any(grepl("strata|Intercept|splines", at$term)))                            # a real conditional logit (no person dummies); intercept and spline basis not reported
+  expect_true(all(c("tw_act_steps", "tw_act_sedentary", "tw_act_mvpa", "b_act_steps") %in% at[analysis == "trailing_baseline", term]))
   expect_equal(at[analysis == "main" & term == "w_act_steps", estimate], sens[analysis == "main", estimate])
-  expect_true(all(at[!is.na(estimate) & grepl("w_", term), or] == exp(-at[!is.na(estimate) & grepl("w_", term), estimate])))   # OR per 1 SD below usual
+  expect_true(all(at[!is.na(estimate), or] == exp(at[!is.na(estimate), estimate])))                 # OR per +1 SD higher than usual: exp(coefficient)
   expect_false(any(at$analysis %in% c("spline_vs_linear", "random_slope")))                # tests, not estimates
-  again <- suppressMessages(run_sensitivity_stage("activity", lazy(function() stop("must not be built")), NULL, prim, s$cfg, ck, dk))
+  again <- suppressMessages(run_sensitivity_stage("activity", lazy(function() stop("must not be built")), NULL, prim, s$cfg, ck, dk,
+                                                  alt_full = lazy(function() stop("must not be built"))))
   expect_true(all(again == "resumed"))                        # nothing is refitted and the bundle is never built
 })
 
@@ -206,4 +202,32 @@ test_that("Healthy is the reference cohort in every model: it is the first level
   expect_false(identical(ckpt_cfg_part(s$cfg, "gapB"), ckpt_cfg_part(cfg2, "gapB")))
   fit_d <- fit_onset_spec(s$b, primary_spec(s$cfg), s$cfg, variant = list(cohort = "Prostate"))   # a cohort-specific fit still works with a factor
   expect_equal(fit_d$info$cohort_stratum, "Prostate")
+})
+
+test_that("calendar years: sparse years are pooled, the reference is the year with the most gap starts, and the fit does not depend on it", {
+  yr <- rep(c(2010L, 2011L, 2012L, 2013L, 2014L), times = c(40, 40, 400, 400, 100))
+  ev <- c(rep(0L, 40), c(1L, rep(0L, 39)), rep(c(1L, 0L), c(30, 370)), rep(c(1L, 0L), c(60, 340)), rep(c(1L, 0L), c(12, 88)))
+  m <- year_level_map(yr, ev, min_events = 10L)
+  expect_equal(m$map[["2010"]], "2010-2012")                         # 0 + 1 + 30 events: pooled up to the neighbour with more gap starts
+  expect_equal(m$reference, "2013")                                    # 60 events: the most informative year is the reference
+  expect_equal(m$levels[1L], "2013")
+  expect_setequal(m$levels, c("2013", "2010-2012", "2014"))
+  expect_equal(year_level_map(yr, ev, min_events = 0L)$levels[1L], "2013")      # nothing pooled when every year has enough
+  expect_equal(length(year_level_map(yr, ev, min_events = 0L)$levels), 5L)
+
+  s <- small_study(beta = -0.5)
+  spec <- primary_spec(s$cfg)
+  d <- build_onset_data(s$b, spec, s$cfg)
+  expect_true(is.factor(d$year_t))
+  r <- fit_onset_spec(s$b, spec, s$cfg)
+  yr_terms <- r$coef[grepl("^factor\\(year_t\\)", term)]
+  expect_true(all(is.finite(yr_terms$se) & yr_terms$se < 10))                              # no inestimable year terms
+  expect_false(any(grepl(paste0("^factor\\(year_t\\)", levels(d$year_t)[1L], "$"), r$coef$term)))   # the reference has no coefficient
+})
+
+test_that("intervals that cannot be estimated are not drawn (no infinite values on the log axis)", {
+  d <- data.table(or = c(0.8, 1.2, 5), or_low = c(0.6, 0, 1e-60), or_high = c(1.1, Inf, 1e60))
+  expect_equal(drawable_interval(d, "or", "or_low", "or_high", log = TRUE), c(TRUE, FALSE, FALSE))
+  d2 <- data.table(estimate = c(0.1, 2), conf_low = c(-0.2, -500), conf_high = c(0.4, 500))
+  expect_equal(drawable_interval(d2, "estimate", "conf_low", "conf_high"), c(TRUE, FALSE))
 })

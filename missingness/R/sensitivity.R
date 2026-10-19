@@ -2,11 +2,12 @@
 # sensitivity.R
 # ------------------------------------------------------------------------------
 # TRUE sensitivity analyses of the primary onset model: the SAME question
-# (does a lower-than-usual prior day raise the odds that a gap starts?) answered
+# (is a higher-than-usual prior day followed by lower odds that a gap starts?) answered
 # under different assumptions. Each returns one row for the primary term, so the
 # results can be read side by side and plotted as a forest plot.
 #
 #   main                  the reference fit
+#   full_period_standardization  the person's "usual" (and the between-person reference) from the WHOLE observation period
 #   trailing_baseline     "usual" = mean of the previous 14 observed days (no look-ahead)
 #   exclude_partial_wear  drop prior days that look like partial wear (device on/off)
 #   first_gap_only        only days up to each person's first gap (no gap history at all)
@@ -19,9 +20,13 @@
 # (The stricter gap definitions k = 2, 3, 7 are model D, in the onset grid.)
 # ==============================================================================
 
-# Rows of one sensitivity analysis: the tested term (`tested = TRUE`) AND every other within-person
-# term of the same model (`w_` / `tw_`), so one analysis can be drawn for all the stream's predictors.
+# Rows of one sensitivity analysis: the tested term (`tested = TRUE`) AND every other term of the same model
+# (predictors and adjustment covariates; not the intercept and not the spline basis, whose coefficients have no
+# reading one by one - they are tested jointly, see term_tests), so one analysis can be drawn for all terms.
 # The tested term alone is what `sensitivity.tsv` reports; the full set is `sensitivity_all_terms.tsv`.
+# The multicollinearity table of the fit travels along as attr(, "gvif").
+is_reportable_term <- function(term) term != "(Intercept)" & !grepl("^splines::ns", term)
+
 extract_term_row <- function(res, analysis, which_term) {
   info <- res$info
   if (is.null(res$coef)) {
@@ -31,9 +36,11 @@ extract_term_row <- function(res, analysis, which_term) {
                       n_events = info$n_events, n_persons_event = info$n_persons_event,
                       status = info$status, note = info$note, tested = TRUE))
   }
-  rows <- res$coef[grepl("^t?w_", term) | term == which_term]
-  rows[, .(analysis = analysis, term, estimate, se, conf_low, conf_high, p, or, or_low, or_high,
-           n_events, n_persons_event, status = info$status, note = info$note, tested = term == which_term)]
+  rows <- res$coef[is_reportable_term(term)]
+  out <- rows[, .(analysis = analysis, term, estimate, se, conf_low, conf_high, p, or, or_low, or_high,
+                  n_events, n_persons_event, status = info$status, note = info$note, tested = term == which_term)]
+  if (!is.null(res$gvif)) setattr(out, "gvif", cbind(analysis = analysis, res$gvif[, .(term, df, gvif, gvif_adj, vif_equiv, flag)]))
+  out
 }
 
 # Same, for an estimator that returns its own coefficient table.
@@ -44,7 +51,7 @@ term_row_from_table <- function(tab, analysis, which_term, ec, status = "ok", no
                       or_low = NA_real_, or_high = NA_real_, n_events = ec$n_events,
                       n_persons_event = ec$n_persons_event, status = "term_missing", note = note, tested = TRUE))
   }
-  rows <- add_odds_ratios(copy(tab[grepl("^t?w_", term) | term == which_term]))
+  rows <- add_odds_ratios(copy(tab[is_reportable_term(term)]))
   rows[, .(analysis = analysis, term, estimate, se, conf_low, conf_high, p, or, or_low, or_high,
            n_events = ec$n_events, n_persons_event = ec$n_persons_event, status = status, note = note,
            tested = term == which_term)]
@@ -64,8 +71,10 @@ fit_conditional_logit <- function(dat, spec, ycol) {
   tv <- if (spec$adjusted) c("dow_t", "splines::ns(study_day, 3)", "prev_gap_len_l",
                              "any_prior_gap", "days_since_return_l") else character()
   tv <- tv[tv != "dow_t" | uniqueN(d$dow_t) > 1L]
-  f <- stats::as.formula(paste0(ycol, " ~ ", paste(c(paste0("w_", preds), tv, "survival::strata(person_id)"),
+  f <- stats::as.formula(paste0(ycol, " ~ ", paste(c(paste0("w_", preds), tv, "strata(person_id)"),
                                                    collapse = " + ")))
+  # `strata()` must be written WITHOUT the "survival::" prefix: only the plain name is recognised as the stratification
+  # special (with the prefix the person ids would enter as ~1000 dummy covariates and no conditional likelihood would be used)
   fit <- with_attached("survival", survival::clogit(f, data = d, method = "efron"))
   cf <- summary(fit)$coefficients
   data.table(term = rownames(cf), estimate = cf[, "coef"], se = cf[, "se(coef)"], p = cf[, ncol(cf)])[
@@ -131,14 +140,15 @@ lrt_row <- function(analysis, term, ec, t, meaning) {
 
 # Version of the stored sensitivity rows (2: every within-person term is kept, not only the tested one).
 # It is part of the checkpoint key, so rows stored by an older version are recomputed, never mixed in.
-SENSITIVITY_SCHEMA <- 2L
+SENSITIVITY_SCHEMA <- 3L
 
 # The sensitivity analyses of the PRIMARY spec of one stream, each an independent checkpointed unit
 # (so a failed or slow analysis never costs the others).
 #   bundle : lazy(prepare_stream_bundle(..., trailing = TRUE))   alt : lazy bundle of the main-sleep-only
 #   rule (sleep only; NULL otherwise)      prim : the primary row of the onset grid
+#   alt_full : lazy bundle with standardization = "full_period" (NULL: that analysis is not run)
 # Returns the run_unit() status of each analysis.
-run_sensitivity_stage <- function(s, bundle, alt, prim, cfg, ckpt_dir, dkey, term = cfg$primary_term) {
+run_sensitivity_stage <- function(s, bundle, alt, prim, cfg, ckpt_dir, dkey, term = cfg$primary_term, alt_full = NULL) {
   spec_l <- as.list(prim); spec_l$predictors <- list(spec_l$predictors[[1L]])
   tw_term <- sub("^w_", "tw_", term)
   status <- character()
@@ -187,6 +197,12 @@ run_sensitivity_stage <- function(s, bundle, alt, prim, cfg, ckpt_dir, dkey, ter
     lrt_row("random_slope", term, cx$ec, lrt_ll(fit_loglik(cx$ftxt, cx$dat, cfg), fit_loglik(f_slope, cx$dat, cfg), boundary = TRUE),
             "small p = effect differs by person")
   })
+  # same model, but the person's usual (and the between-person reference) from the WHOLE observation period (look-ahead).
+  # Run last: the other bundles are released first, so two person-day tables are never alive together.
+  if (!is.null(alt_full)) {
+    bundle$release(); if (!is.null(alt)) alt$release()
+    refit("full_period_standardization", list(), term, alt_full)
+  }
   status
 }
 
@@ -194,11 +210,12 @@ run_sensitivity_stage <- function(s, bundle, alt, prim, cfg, ckpt_dir, dkey, ter
 collect_sensitivity_results <- function(ckpt_dir, cfg, data_keys) {
   cu <- collect_units(ckpt_dir, "sensitivity", cfg, data_keys)
   tab <- rbindlist(Map(function(v, st) cbind(stream = st, v), cu$values, cu$units$stream), fill = TRUE)
-  if (nrow(tab) == 0L) return(list(sensitivity = tab, sensitivity_all_terms = tab, sensitivity_failures = cu$failures))
+  gv  <- rbindlist(Map(function(v, st) { g <- attr(v, "gvif"); if (is.null(g)) NULL else cbind(stream = st, g) }, cu$values, cu$units$stream), fill = TRUE)
+  if (nrow(tab) == 0L) return(list(sensitivity = tab, sensitivity_all_terms = tab, sensitivity_collinearity = gv, sensitivity_failures = cu$failures))
   # `sensitivity`: the tested term of every analysis (as before); `sensitivity_all_terms`: all within-person terms
   list(sensitivity = tab[tested %in% TRUE][, tested := NULL][],
        sensitivity_all_terms = tab[!analysis %in% c("spline_vs_linear", "random_slope")][, tested := NULL][],   # estimates only (the other two are tests)
-       sensitivity_failures = cu$failures)
+       sensitivity_collinearity = gv, sensitivity_failures = cu$failures)
 }
 
 # ---- engine check -----------------------------------------------------------------------------------

@@ -177,7 +177,7 @@ test_that("one forest plot with all predictors per stream for the onset, sensiti
 
   ba <- CJ(stream = "activity", model_id = names(GAPB_LABELS), term = c("log2_gap", "age10", "cohortDiabetes"))[, `:=`(estimate = -0.02, se = 0.01, conf_low = -0.04, conf_high = 0)]
   ba <- rbind(ba, data.table(stream = "activity", model_id = "B_back2_adj_pre", term = "w_pre_day_steps", estimate = 0.1, se = 0.01, conf_low = 0.08, conf_high = 0.12))
-  p <- plot_gapB_forest(ba, "activity", cfg); built(p); expect_equal(uniqueN(ggplot2::ggplot_build(p)$plot$data$panel), 4L)
+  p <- plot_gapB_forest(ba, "activity", cfg); built(p); expect_equal(uniqueN(ggplot2::ggplot_build(p)$plot$data$panel), length(GAPB_LABELS))
   ca <- CJ(stream = "activity", model_id = names(GAPC_LABELS), term = c("w_pre_day_steps", "age10"))[, `:=`(estimate = 0.1, se = 0.02, or = 0.9, or_low = 0.85, or_high = 0.95)]
   p <- plot_gapC_forest(ca, "activity", cfg); built(p); expect_null(plot_gapC_forest(ca[0L], "activity", cfg))
 
@@ -206,4 +206,128 @@ test_that("violin figures with more than 12 violins in total are placed in 2 or 
   ml <- data.table(cohort = factor(rep(cfg$cohorts, 60), levels = cfg$cohorts), metric = rep(c("a", "b", "c", "d", "e"), each = 48), value = rexp(240))
   expect_equal(plot_metric_violin(ml, cfg, "t")$facet$params$nrow, 2L)             # 4 violins x 5 panels = 20: 2 rows
   small <- ml[metric %in% c("a", "b", "c")]; expect_null(attr(plot_metric_violin(small, cfg, "t"), "size"))   # 12 in total: as before
+})
+
+test_that("one direction everywhere: odds ratios are per +1 SD higher, no label or caption speaks of 'per 1 SD below'", {
+  root <- Filter(function(d) file.exists(file.path(d, "R", "plots.R")), c(".", "../.."))[1L]
+  skip_if(is.na(root), "package sources not found")
+  files <- file.path(root, c(file.path("R", list.files(file.path(root, "R"))), "README.md", "STATISTICS.md", "MODEL_EQUATIONS.md"))
+  src <- unlist(lapply(files[file.exists(files)], readLines))
+  expect_false(any(grepl("1 SD below|1 SD BELOW|SD lower than|lower-than-usual|exp\\(-", src)))
+  cfg <- make_config()
+  expect_match(ckpt_cfg_part(cfg, "onset")$or_direction, "+1 SD higher", fixed = TRUE)            # results saved with another convention are never reused
+  expect_match(ckpt_cfg_part(cfg, "gapC")$or_direction, "+1 SD higher", fixed = TRUE)
+  expect_match(plot_forest(data.table(label = "a", or = 0.8, or_low = 0.7, or_high = 0.9), "t")$labels$x, "per +1 SD", fixed = TRUE)
+  expect_equal(vapply(c("onset_primary_forest", "onset_forest_other_activity", "sensitivity_forest_hr", "gapC_forest_sleep"),
+                      function(n) grepl("+1 SD", caption_for(n, cfg), fixed = TRUE), TRUE), setNames(rep(TRUE, 4), c("onset_primary_forest", "onset_forest_other_activity", "sensitivity_forest_hr", "gapC_forest_sleep")))
+})
+
+test_that("all-terms comparison forests: primary first (dark), every term but the intercept and the spline basis, calendar years apart", {
+  cfg <- make_config(); geoms <- function(p) vapply(p$layers, function(l) class(l$geom)[1L], "")
+  terms <- c("(Intercept)", "w_act_steps", "b_act_steps", "cohortDiabetes", "age10", "dow_tMon", "splines::ns(study_day, 3)1", "splines::ns(study_day, 3)2",
+             "factor(year_t)2021", "factor(year_t)2022", "prev_gap_len_l")
+  mk <- function(a) data.table(stream = "activity", analysis = a, term = terms, or = 1.2, or_low = 1.0, or_high = 1.4, estimate = 0.2, conf_low = 0.1, conf_high = 0.3)
+  tab <- rbind(mk("main"), mk("trailing_baseline")[term == "w_act_steps", term := "tw_act_steps"], mk("conditional_logit")[!grepl("^b_|^cohort|^age", term)])
+  gl <- c(main = "Main", trailing_baseline = "Trailing baseline", conditional_logit = "Conditional logit")
+  p <- plot_effects_by_group(tab, "activity", cfg, "analysis", gl, "other", "t", SUBTITLE_OR)
+  d <- ggplot2::ggplot_build(p)$plot$data
+  expect_false(any(grepl("Intercept|splines|year_t", d$term_key)))
+  expect_equal(levels(d$grp), unname(gl)); expect_equal(unname(unlist(lapply(ggplot2::ggplot_build(p)$data[1], function(x) 0))), 0)
+  expect_true(all(d[grp == "Trailing baseline", term_key] %in% terms) && "w_act_steps" %in% d[grp == "Trailing baseline", term_key])   # tw_ lines up with w_
+  expect_equal(nrow(d[grp == "Conditional logit"]), 3L)                                         # only the terms that model has (w_act_steps, weekday, previous gap length)
+  expect_equal(unname(p$guides$colour$params$reverse %||% TRUE), TRUE); expect_equal(length(attr(p, "size")), 2L)
+  expect_true("GeomPointrange" %in% geoms(p))
+  expect_equal(rev(levels(d$label))[1L], "Within: Steps")                                       # the model's own order, top to bottom
+  py <- plot_effects_by_group(tab, "activity", cfg, "analysis", gl, "year", "t")
+  expect_setequal(ggplot2::ggplot_build(py)$plot$data$term_key, c("factor(year_t)2021", "factor(year_t)2022"))
+  expect_null(plot_effects_by_group(tab, "sleep", cfg, "analysis", gl, "other", "t"))
+  pe <- plot_effects_by_group(tab[!grepl("^b_", term)], "activity", cfg, "analysis", gl, "other", "t", measure = "estimate")   # linear model: estimates, reference 0
+  expect_equal(pe$layers[[1]]$data$xintercept %||% pe$layers[[1]]$aes_params$xintercept, 0)
+  expect_match(pe$labels$x, "SD units"); expect_match(p$labels$x, "Odds ratio")
+  expect_silent(suppressWarnings(ggplot2::ggplot_build(p))); expect_silent(suppressWarnings(ggplot2::ggplot_build(pe)))
+})
+
+test_that("collinearity, observed post-gap, wear-consistency and exploratory-grid figures build, with explicit sizes and labels", {
+  cfg <- make_config(); geoms <- function(p) vapply(p$layers, function(l) class(l$geom)[1L], "")
+  gv <- data.table(stream = "activity", analysis = rep(c("Primary onset model (gap >= 1 day)", "Model C: C_adj"), each = 3L), term = rep(c("w_act_steps", "cohort", "age10"), 2),
+                   df = rep(c(1L, 3L, 1L), 2), vif_equiv = c(1.2, 6, 12, 1, 2, 1.1), flag = c("ok", "high", "severe", "ok", "ok", "ok"))
+  p <- plot_collinearity(gv, "activity", cfg); expect_silent(suppressWarnings(ggplot2::ggplot_build(p)))
+  expect_equal(levels(p$data$flag), c("ok", "high", "severe")); expect_equal(as.character(p$data[term == "cohort", label][1L]), "Cohort [3 df]")
+  expect_null(plot_collinearity(gv, "hr", cfg))
+
+  tr <- CJ(stream = "activity", gap_group = factor(c("1", "2", "3", "4-7", "8-14", "15+", "all gaps"), levels = c("1", "2", "3", "4-7", "8-14", "15+", "all gaps")), days_since_return = 0:7)
+  tr[, `:=`(mean = 0.05 * days_since_return - 0.1, se = 0.05, n_gaps = 100L, n_persons = 60L, median_gap_length = c(1, 2, 3, 5, 10, 20, 2)[as.integer(gap_group)])]
+  tr[, `:=`(lo = mean - 0.1, hi = mean + 0.1)]
+  cv <- CJ(stream = "activity", model_id = "B_back2_unadj", gap_length = 1:14)[, `:=`(est = -0.01 * gap_length, lo = -0.01 * gap_length - 0.05, hi = -0.01 * gap_length + 0.05)]
+  p <- plot_post_gap_observed(tr, cv, "activity", cfg); expect_silent(suppressWarnings(ggplot2::ggplot_build(p)))
+  expect_true(all(c("GeomLine", "GeomPointrange") %in% geoms(p))); expect_equal(sum(geoms(p) == "GeomPointrange"), 2L)       # observed, and the model-based diamonds apart
+  expect_equal(unique(p$layers[[4]]$aes_params$shape), 5)                                                                     # model estimate: open diamond
+  expect_equal(nrow(p$layers[[4]]$data), 6L)                                                                                  # groups 1, 2, 3, 4-7, 8-14 and all gaps (the 15+ group is beyond the model curve)
+  expect_match(levels(p$data$panel)[1L], "1 day: 100 gaps, 60 people")
+  expect_equal(range(p$data$days_since_return), c(0, 7)); expect_null(plot_post_gap_observed(tr, cv, "sleep", cfg))
+
+  w <- data.table(stream = rep(c("activity", "sleep"), each = 40L), cohort = rep(cfg$cohorts, 20L), coverage = c(runif(40, 0.7, 1), runif(40, 0.7, 1)))
+  crit <- data.table(stream = c("activity", "sleep"), threshold = 0.9, n_consistent = 20L, n_inconsistent = 20L)
+  expect_silent(suppressWarnings(ggplot2::ggplot_build(plot_wear_distribution(w, crit, cfg))))
+  comp <- data.table(stream = rep(c("activity", "sleep"), each = 3L), variable = rep(c("Age at first record (years)", "Female (%)", "Cohort: Healthy"), 2), smd = c(0.3, -0.05, 0.12, 0.2, 0.0, -0.3))
+  expect_silent(suppressWarnings(ggplot2::ggplot_build(plot_wear_composition(comp, cfg))))
+  cmp <- data.table(model = c("onset (primary)", "model C (adjusted)", "model B (adjusted)"), stream = "activity", effect_measure = c("odds ratio per +1 SD", "odds ratio per +1 SD", "SD change per unit"),
+                    effect_consistent = c(0.6, 0.9, -0.1), low_consistent = c(0.5, 0.7, -0.2), high_consistent = c(0.7, 1.1, 0), effect_inconsistent = c(0.7, 0.95, 0.0),
+                    low_inconsistent = c(0.6, 0.8, -0.1), high_inconsistent = c(0.8, 1.1, 0.1), p_difference = c(0.02, 0.6, 0.1), p_interaction_lrt = c(0.02, NA, NA))
+  p <- plot_wear_primary_effect(cmp, cfg); expect_silent(suppressWarnings(ggplot2::ggplot_build(p)))
+  expect_setequal(as.character(unique(p$data$panel)), c("onset (primary): activity", "model C (adjusted): activity"))      # odds-ratio models only (model B has its own forest)
+  expect_null(plot_wear_primary_effect(cmp[0L], cfg))
+
+  co <- CJ(stream = "activity", set_name = c("uni_act_steps", "joint"), adjusted = c(FALSE, TRUE), term = c("w_act_steps", "b_act_steps"))[
+    , `:=`(k = 1L, role = ifelse(set_name == "joint" & adjusted, "primary", "exploratory"), or = 0.8, or_low = 0.7, or_high = 0.9)]
+  p <- plot_exploratory_grid(co, "activity", cfg); expect_silent(suppressWarnings(ggplot2::ggplot_build(p)))
+  expect_setequal(levels(p$data$spec), c("All predictors together", "Steps alone")); expect_null(plot_exploratory_grid(co[role == "primary"], "activity", cfg))
+})
+
+test_that("every figure belongs to one analysis step of the workflow and has a caption; figure_index.tsv lists them", {
+  nm <- c("heatmap_sleep", "missing_pct_by_sex", "transition", "wear_consistency_distribution", "wear_consistency_composition", "onset_forest_year_activity",
+          "onset_deciles_hr", "risk_curve", "gap_dose_response", "gapC_forest_hr", "post_gap_activity_observed_sleep", "wear_strata_primary_effect",
+          "wear_strata_onset_all_terms_other_activity", "wear_strata_gapB_all_terms_hr", "sensitivity_forest_hr", "sensitivity_all_terms_other_hr", "forest_sensitivity",
+          "gap_definition_all_terms_year_sleep", "exploratory_grid_effects_activity", "collinearity_gvif_hr")
+  steps <- vapply(nm, function(n) figure_analysis(n)$step, 1L)
+  expect_false(anyNA(steps)); expect_false(anyNA(vapply(nm, caption_for, character(1))))
+  expect_equal(unname(steps[c("heatmap_sleep", "transition", "wear_consistency_distribution", "risk_curve", "wear_strata_primary_effect", "sensitivity_forest_hr", "collinearity_gvif_hr")]), c(1L, 2L, 3L, 4L, 5L, 6L, 7L))
+  expect_true(is.na(figure_analysis("not_a_figure")$step))
+  d <- tempfile(); dir.create(file.path(d, "figures"), recursive = TRUE); for (n in nm[1:3]) file.create(file.path(d, "figures", paste0(n, ".png")))
+  write_figure_captions(nm[1:3], d, make_config())
+  ix <- fread(file.path(d, "figures", "figure_index.tsv"))
+  expect_equal(ix$figure, c("heatmap_sleep.png", "missing_pct_by_sex.png", "transition.png")); expect_equal(ix$step, c(1L, 1L, 2L))
+  expect_true(all(c("figure", "step", "analysis", "model", "caption") %in% names(ix)))
+  expect_match(caption_for("collinearity_gvif_hr"), "VIF-equivalent"); expect_match(caption_for("wear_strata_primary_effect"), "formal test")
+})
+
+test_that("every result table is assigned to an analysis step and table_index.tsv lists them", {
+  nm <- c("cohort_missingness", "missing_pct_by_stratum", "metric_summary", "transition", "weekday_tests", "wear_consistency_classification", "onset_coefficients", "primary_test",
+          "model_B_post_gap_activity", "model_C_gap_length", "wear_strata_comparison", "sensitivity_all_terms", "model_collinearity", "onset_term_tests", "unit_failures")
+  st <- vapply(nm, function(n) table_analysis(n)$step, 1L)
+  expect_equal(unname(st), c(1L, 1L, 1L, 2L, 2L, 3L, 4L, 4L, 4L, 4L, 5L, 6L, 7L, 7L, 7L))
+  d <- tempfile(); dir.create(file.path(d, "tables"), recursive = TRUE)
+  for (n in nm[1:4]) fwrite(data.table(a = 1), file.path(d, "tables", paste0(n, ".tsv")))
+  write_table_index(d); ix <- fread(file.path(d, "tables", "table_index.tsv"))
+  expect_equal(ix$table, c("cohort_missingness.tsv", "metric_summary.tsv", "missing_pct_by_stratum.tsv", "transition.tsv")); expect_equal(ix$step, c(1L, 1L, 1L, 2L))
+})
+
+test_that("the MVPA figure of models B and C compares the specifications without (dark) and with MVPA, for the three terms only", {
+  cfg <- make_config()
+  mk <- function(ids, terms, est) CJ(stream = "activity", model_id = ids, term = terms)[, `:=`(estimate = est, se = 0.05, conf_low = est - 0.1, conf_high = est + 0.1, or = exp(est), or_low = exp(est - 0.1), or_high = exp(est + 0.1))]
+  b <- rbind(mk(c("B_back2_adj", "B_back2_adj_mvpa"), c("log2_gap", "cohortDiabetes"), 0.02), mk("B_back2_adj_mvpa", "w_pre_day_mvpa", 0.1),
+             mk(c("B_back2_adj_pre", "B_back2_adj_pre_mvpa"), c("log2_gap", "w_pre_day_steps"), 0.03), mk("B_back2_adj_pre_mvpa", "w_pre_day_mvpa", 0.08), mk("B_back2_unadj", "log2_gap", 0))
+  p <- plot_gap_mvpa(b, "activity", cfg, "B"); d <- ggplot2::ggplot_build(p)$plot$data
+  expect_silent(suppressWarnings(ggplot2::ggplot_build(p)))
+  expect_false(any(grepl("cohort|unadj", paste(d$term_key, d$model_id))))                     # only gap length, steps and MVPA; only the pairs that have an MVPA version
+  expect_setequal(as.character(unique(d$model_id)), c("B_back2_adj", "B_back2_adj_mvpa", "B_back2_adj_pre", "B_back2_adj_pre_mvpa"))
+  expect_equal(levels(d$grp)[1L], "Adjusted (cohort, age, sex)"); expect_true("MVPA before the gap" %in% levels(d$label))
+  expect_match(p$labels$x, "Change in activity"); expect_match(p$labels$title, "MVPA Before the Gap")
+  cc <- rbind(mk(c("C_adj", "C_adj_mvpa"), "w_pre_day_steps", 0.0), mk("C_adj_mvpa", "w_pre_day_mvpa", -0.1))
+  pc <- plot_gap_mvpa(cc, "activity", cfg, "C"); expect_silent(suppressWarnings(ggplot2::ggplot_build(pc)))
+  expect_match(pc$labels$x, "Odds ratio of a longer gap"); expect_equal(length(attr(pc, "size")), 2L)
+  expect_null(plot_gap_mvpa(cc[term != "w_pre_day_mvpa"], "activity", cfg, "C")); expect_null(plot_gap_mvpa(cc, "sleep", cfg, "C")); expect_null(plot_gap_mvpa(cc[0L], "activity", cfg, "C"))
+  expect_equal(term_label("w_pre_day_mvpa"), "MVPA before the gap")
+  expect_false(is.na(caption_for("gapB_mvpa_effect_hr"))); expect_false(is.na(caption_for("gapC_mvpa_effect_sleep")))
+  expect_equal(figure_analysis("gapB_mvpa_effect_hr")$step, 4L)
 })

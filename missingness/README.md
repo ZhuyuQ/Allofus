@@ -1,9 +1,14 @@
 # Missingness pipeline (Fitbit activity, sleep, heart rate)
 
 Day-level missingness for the four cohorts (Insomnia, Diabetes, Prostate, Healthy): summary
-statistics and cohort comparisons, temporal structure, day-of-week clustering, and a
-mixed-effects model of **gap onset ~ prior-day activity**. (Disease-label prediction and the
-mixture model are not part of this.)
+statistics and cohort comparisons, temporal structure, day-of-week clustering, a
+mixed-effects model of **gap onset ~ prior-day activity** (predictors standardized only with data observed before each
+day), gap-level models of activity after a gap and of gap length, the same models by **wear consistency**, sensitivity analyses
+and collinearity diagnostics. (Disease-label prediction and the mixture model are not part of this.)
+
+**Where to read what:** this file = layout, how to run, the analysis workflow and a map of every output (tables and figures) to its analysis;
+`STATISTICS.md` = the statistical methods (definitions, standardization and its reference distributions, models, effect sizes, tests,
+collinearity, wear-consistency strata, validation); `MODEL_EQUATIONS.md` = the exact formulas, predictors, outcomes and contrasts per stream.
 
 ## Layout
 
@@ -12,22 +17,28 @@ load_missingness.R        source everything in dependency order
 R/config.R                make_config(): every setting that affects a result + cfg$resources (memory, workers)
 R/utils.R                 checkpoints (run_unit), isolated workers, memory diagnostics, lazy objects, small helpers
 R/io.R                    raw exports (L0), day tables (L1), the day store (reads one stream / some columns at a time)
-R/bq_export.R             step 0: the SQL for the 16 BigQuery exports (activity, sleep, hr, meta)
+R/bq_export.R             step 0: the SQL for the 16 BigQuery exports (activity, sleep, hr, meta); optional (Cell 6c): Fitbit device version export + probe + coverage check (not read by the ETL yet)
 R/etl.R                   raw stream -> one row per person-day (activity, sleep, hr)
 R/persons.R               cohort overlap, sex, age at first record, race, CCI groups
 R/gaps.R                  gap runs, person summaries, the onset "risk set"
-R/predictors.R            within-/between-person prior-day predictors, per-stream bundle
+R/predictors.R            within-/between-person prior-day predictors (pre-gap or full-period standardization), per-stream bundle
+R/collinearity.R          GVIF and joint Wald tests of every fitted model, the diagnostics tables
 R/summarise.R             cohort tables and comparisons
 R/temporal.R              onset vs continuation, study week, year, weekday
 R/descriptive.R           summary statistics of metric values by cohort / strata
 R/onset_model.R           primary model, model A (gap history), model D (k = 2, 3, 7); one checkpointed unit per model
 R/sensitivity.R           sensitivity analyses of the primary model; one checkpointed unit per analysis
-R/gap_models.R            models B and C (use gap length); six independent units per stream
+R/gap_models.R            models B and C (use gap length), their full-period variants and the observed post-gap trajectory; independent units per stream
+R/outcome_variables.R     person-level % of days missing against each model variable: tests, adjusted odds ratios, figures
+R/device.R                Fitbit watch version: person table + timeline from the device export, as-of assignment to days, missing / composition statistics
+R/wear_consistency.R      wear-consistency classification, descriptive statistics, models within each stratum, comparison of strata
 R/plots.R                 ggplot2 figures in the style of the earlier notebooks + figure captions
+R/plots_effects.R         comparison forests (primary vs sensitivity / stratum), collinearity, observed post-gap, wear-consistency figures
 R/report.R                tables, captions, results summary, run metadata
 R/pipeline.R              run_etl() and run_missingness_pipeline() (orchestration only)
 R/simulate.R              seeded fake data with a planted effect (tests / demo)
-pipeline/notebook_cells.R the notebook, Cells 1-18 (copy each "# ==== CELL n" block into a cell)
+pipeline/notebook_cells.R the notebook, Cells 1-19 (copy each "# ==== CELL n" block into a cell)
+pipeline/validate_simulation.R  validation of the primary estimate on simulated data with a known effect (bias, SE calibration, coverage)
 pipeline/run_exports.R    step 0, only if the CSV exports are missing (e.g. after a migration)
 pipeline/run_etl.R        run once per export     |  pipeline/run_missingness.R   the analysis
 pipeline/run_demo.R       end-to-end on simulated data
@@ -44,11 +55,11 @@ source("missingness/pipeline/run_etl.R")
 # 2. the analysis (reads only the compact tables)
 source("missingness/pipeline/run_missingness.R")
 ```
-In the notebook use `pipeline/notebook_cells.R` (Cells 1-18). Inputs besides BigQuery: `final_pid.txt`
+In the notebook use `pipeline/notebook_cells.R` (Cells 1-19). Inputs besides BigQuery: `final_pid.txt`
 (person -> cohort) and `pre_final_cci.txt`. Use the same export date in `run_exports.R` and `run_etl.R`.
 Finished exports are skipped, so a failed run can simply be repeated.
 No real data are needed to check the code: `Rscript pipeline/run_demo.R <dir>` runs everything on
-simulated data whose true effect is known (OR 1.65 per 1 SD below usual).
+simulated data whose true effect is known (OR 0.61 per +1 SD higher steps than usual).
 
 ## Data flow
 
@@ -60,7 +71,8 @@ result/final/missingness/
 |-- L1/                       day_activity / day_sleep / day_hr, persons.rds, manifest.tsv, dropped_columns.tsv
 `-- results/
     |-- tables/               every result table (*.tsv), incl. unit_failures, checkpoint_status, unit_run_status
-    |-- figures/              *.png and figure_captions.md (what each figure shows and how to read it)
+    |-- figures/              *.png, figure_captions.md (what each figure shows and how to read it) and figure_index.tsv
+    |                         (each figure with its analysis step, model and caption)
     |-- checkpoints/          one .rds per finished model (see below)
     |-- results_summary.md    the main numbers in plain language, written from the saved tables
     `-- run_config.json, session_info.txt, input_manifest.tsv
@@ -69,6 +81,43 @@ A day is **observed** when a row exists in its day table. Sleep: main sleep and 
 to one row per day (a nap-only day counts as observed). Heart rate: the four zone rows (Out of
 Range, Fat Burn, Cardio, Peak) become one wide row per day. Columns that are mostly NA (> 90%) or
 constant are dropped, and the list is written to `dropped_columns.tsv`.
+
+## Analysis workflow and output map
+
+The analyses follow one logical order; every step reads the output of the earlier ones and the notebook cell that runs it is given.
+Standardization: every within- and between-person z-score uses only data observed **before** the day (or gap) it is applied to (`cfg$standardization`,
+see `STATISTICS.md` 5.2); the full-observation-period version is a sensitivity analysis. Effect sizes: odds ratios (OR = exp(coefficient)) **per +1 SD higher
+than the person's usual** (model B: change in activity in SD units); reference levels Healthy (cohort), Female, Sunday, the calendar year with the most gap starts (years with fewer than 10 gap starts are pooled with a neighbouring year, e.g. `2010-2012`).
+
+**Data sources and sample flow.** BigQuery exports (activity, sleep, heart rate, meta; Cells 6-7) -> day tables `L1/` (one row per observed person-day; Cell 8) ->
+people per cohort after the overlap rule (Cell 5; `cohort_overlap.tsv`) -> the upstream selection (>= 70% observed, longest gap <= 14 days, >= 21 days; checked in
+`selection_check`) -> models (the rows, people, events and gaps of every model are in `onset_models`, `model_B_post_gap_activity`, `model_C_gap_length`; days without
+7 earlier observed days have no z-score and are not in a model) -> wear strata (`wear_strata_quality`).
+
+| step | analysis (cell) | tables (`results/tables/`) | figures (`results/figures/`) |
+|---|---|---|---|
+| 1 | **Descriptive statistics** of missingness and of the metric values (Cell 11, 11b) | `cohort_missingness`, `cohort_tests_overall`, `cohort_tests_pairwise`, `missing_fraction_models`, `missing_pct_by_stratum*`, `metric_summary*`, `selection_check` | `heatmap_<stream>`, `missing_pct_by_cohort`, `longest_gap_by_cohort`, `gap_length_distribution`, `gap_ecdf`, `missing_pct_by_sex` / `_age_group` / `_race_plot` / `_cci_group`, `metrics_<stream>_by_cohort`, `metrics_<stream>_by_<stratum>` |
+| 2 | **Temporal structure** (Cell 11, 11b) | `transition`, `study_week_rates`, `calendar_year_rates`, `weekday_rates`, `weekday_tests`, `weekday_odds_ratios`, `missing_trend_tests`, `missing_trend_heterogeneity`, `missing_weekday_*`, `age_rates` | `transition`, `missing_by_study_week`, `missing_by_year`, `missing_by_weekday`, `missing_by_age` |
+| 1 | **Descriptive: person-level % of days missing against every model variable** (Cell 11e) | `outcome_variable_tests`, `outcome_variable_contrasts`, `outcome_variable_models`, `outcome_variable_summary`, `outcome_variable_bins` | `outcome_by_variable_categorical`, `outcome_by_variable_continuous_<stream>` |
+| 3 | **Data quality: watch version** (Cells 6c, 8b, 11d; person level, no model) | `device_cohort_mix`, `device_missing_by_cohort`, `device_tests`, `device_missing_vs_reference`, `device_missing_model`, `device_composition_by_cohort`, `device_composition_residuals`, `device_version_by_cohort`, `device_switching_by_cohort` | `device_version_missing_and_composition`, `device_cohort_mix_by_version` |
+| 3 | **Data quality: wear consistency** (Cell 11c; classification rule written before any stratified model) | `wear_consistency_classification`, `wear_consistency_descriptive`, `wear_consistency_composition`, `wear_consistency_by_person` | `wear_consistency_distribution`, `wear_consistency_composition` |
+| 4a | **Primary model: gap onset** (primary, model A inside it, model D, exploratory grid; Cells 12-14, 17) | `onset_coefficients` (every term), `onset_models`, `primary_test`, `onset_term_tests`, `vif`, `cohort_interaction`, `cohort_specific`, `risk_unadjusted`, `onset_deciles` | `onset_primary_forest`, `onset_forest_year_<stream>` + `onset_forest_other_<stream>` (all terms), `onset_deciles_<stream>`, `risk_curve`, `cohort_forest`, `forest_gap_definition`, `gap_definition_all_terms_other_<stream>` + `_year_`, `exploratory_grid_effects_<stream>` |
+| 4b | **Gap-level model B: activity after a gap** (Cell 15) | `model_B_post_gap_activity`, `model_B_all_terms`, `model_B_curve`, `model_B_observed`, `model_B_observed_trajectory` | `gap_dose_response`, `gapB_forest_<stream>`, `post_gap_activity_observed_<stream>` |
+| 4c | **Gap-level model C: gap length** (Cell 15) | `model_C_gap_length`, `model_C_all_terms`, `model_C_predicted_probs` | `gap_length_probs`, `gapC_forest_<stream>` |
+| 4d | **MVPA before the gap as a covariate of models B and C** (Cell 15; units `B_back2_adj_mvpa`, `B_back2_adj_pre_mvpa`, `C_adj_mvpa`) | `gap_mvpa_effects` (MVPA effect with 95% CI, the main terms with and without MVPA, n, VIF); the MVPA fits are also in `model_B_post_gap_activity`, `model_C_gap_length`, `model_B_all_terms`, `model_C_all_terms` | `gapB_mvpa_effect_<stream>`, `gapC_mvpa_effect_<stream>` |
+| 5 | **Stratified analyses by wear consistency** (Cell 18) | `wear_strata_onset_coefficients`, `wear_strata_onset_models`, `wear_strata_gapB` / `_gapC` (+ `_all_terms`), `wear_strata_interaction`, `wear_strata_comparison`, `wear_strata_quality` | `wear_strata_primary_effect`, `wear_strata_onset_all_terms_other_<stream>` + `_year_`, `wear_strata_gapB_all_terms_<stream>`, `wear_strata_gapC_all_terms_<stream>` |
+| 6 | **Sensitivity analyses** incl. full-period standardization (Cell 16; for models B and C the `*_fullperiod` units of Cell 15) | `sensitivity`, `sensitivity_all_terms`, `sensitivity_collinearity` | `forest_sensitivity`, `sensitivity_forest_<stream>`, `sensitivity_all_terms_other_<stream>` + `_year_` |
+| 7 | **Model diagnostics and integrated summary** (written by every model cell) | `model_collinearity` (GVIF of every model), `model_term_tests`, `onset_collinearity`, `gap_collinearity`, `wear_strata_onset_collinearity`, `unit_failures`, `checkpoint_status`, `unit_run_status`; `results_summary.md` | `collinearity_gvif_<stream>` |
+
+`figures/figure_index.tsv` lists every figure present with its step, analysis, model and caption; `figures/figure_captions.md` has the captions;
+`tables/table_index.tsv` lists every table with its step.
+The all-terms figures come in two parts: `..._year_...` = the calendar-year terms (each year, or pooled years, against the year with the most gap starts), `..._other_...` = every other term
+(within-person, between-person, cohort, age, sex, weekday, gap history); the study-time spline and the intercept are not drawn (joint tests: `onset_term_tests`,
+`model_term_tests`). In all comparison figures the first (dark) colour is the primary analysis.
+
+**Settings that change results** (`cfg`, part of every checkpoint key): `standardization` (`method = "pre_gap"`, `baseline_min_n = 7`), `reference_cohort`,
+`wear` (`method = "median"` or `"fixed"`, `threshold`, `onset_roles`, `min_persons_stratum`, `epv_min`), the onset / gap-model settings as before. Results saved by an earlier
+version of the code (other standardization, other odds-ratio direction, other stored content) are recognised as stale and refitted once.
 
 ## Resources, memory, checkpoints and resuming
 
@@ -105,7 +154,7 @@ multiply peak memory, and a fit is dominated by one single-threaded optimiser an
 
 **Checkpoints.** Every independently runnable model is a *unit* and writes
 `result/final/missingness/results/checkpoints/<kind>__<stream>__<model>__<settings-tag>.rds`
-(kinds: `onset`, `onset_extra`, `gapB`, `gapC`, `sensitivity`). A file is reused only if its stored key matches
+(kinds: `onset`, `onset_extra`, `gapB`, `gapC`, `sensitivity`, `wear_onset`, `wear_extra`, `wear_gapB`, `wear_gapC`). A file is reused only if its stored key matches
 the run asking: the result-changing settings, the **md5 of the L1 files** it was fitted on, the model
 specification and the person sample. It also records warnings, run time, R and package versions. Files are written
 under a temporary name and renamed, so a crash cannot leave a half-written file that looks valid. A unit that
@@ -136,22 +185,12 @@ The trend and weekday models are pooled logistic regressions of the person x wee
 (sandwich) standard errors; the trend is linear on the logit scale. Estimate figures from the models (forest plots, predicted probabilities) draw one dot +/- 1 SD of the estimate (its standard error; `cfg$plot$interval_style = "ci95"` draws the 95% interval, `"box"` one box per estimate: line = estimate, box = central 50% interval, whiskers = 95% interval; the uncertainty of the estimate, not the spread of the data). The cohort transition figure keeps its own setting, `cfg$plot$transition_style` (default `"box"`). Violin figures with
 more than 12 violins in total (violins per panel x panels) put their panels in 2 rows (13-24) or 3 rows (more) with a matching image size.
 
-| figure | shows |
-|---|---|
-| `onset_primary_forest` | primary model: OR of a gap tomorrow per 1 SD below usual, each prior-day predictor, with 95% CI and gap/people counts |
-| `onset_forest_year_<stream>` / `onset_forest_other_<stream>` | gap-onset model of that stream (primary, joint, adjusted), all predictors in two forest plots: part 1 = the calendar-year terms (each year against the first year), part 2 = everything else (within-person terms, between-person terms, covariates, gap history; cohorts against Healthy) |
-| `onset_deciles_<stream>` | extra figure per stream: observed (model-free) % of days followed by a gap by decile of yesterday's within-person steps, one line per cohort (table `onset_deciles.tsv`) |
-| `sensitivity_forest_<stream>` | every within-person predictor under every sensitivity analysis (one panel per predictor; table `sensitivity_all_terms.tsv`) |
-| `gapB_forest_<stream>` / `gapC_forest_<stream>` | models B and C: every coefficient of each specification (tables `model_B_all_terms.tsv`, `model_C_all_terms.tsv`) |
-| `forest_gap_definition` | the primary effect for gaps >= 1, 2, 3, 7 days (model D) |
-| `risk_curve` | population-average % chance of a gap tomorrow at 1 SD below / usual / above (95% interval from intercept + slope) |
-| `cohort_forest` | the primary effect per cohort + LRT for a cohort difference; cohorts that could not be estimated are named |
-| `forest_sensitivity` | primary effect under the sensitivity assumptions (comparable estimates only; LRTs are in `sensitivity.tsv`) |
-| `gap_dose_response` | model B: fitted activity after the gap vs gap length (log2 axis, 95% CI) against observed group means (clustered 95% CI, n shown) |
-| `gap_length_probs` | model C: population-average probability of each length group at 1 SD below / usual / above, with 95% CI (only where proportional odds held) |
-| `missing_pct_by_sex` / `_age_group` / `_race_plot` / `_cci_group` | person-level % missing by cohort within the groups of one stratum (dodged violins + box, one panel per stream); label = test between the groups within each cohort (Kruskal-Wallis, Wilcoxon for two groups), Holm-adjusted over cohorts; effect sizes in `missing_pct_by_stratum_tests.tsv` |
-| `missing_by_study_week` / `_year` / `_weekday` / `_age` | pooled missing share per cohort, one line + shaded 95% bootstrap band each (same configuration for all four); age is continuous (5-year moving window) |
-| other descriptive / temporal figures | as before (violins, ECDF, gap-length distribution, transition, heatmaps) |
+Which figure belongs to which analysis: see the output map above (`figure_index.tsv` has it per figure). Short readings of the older figures:
+`onset_primary_forest` = OR of a gap tomorrow per +1 SD higher than usual for each predictor of the primary model; `onset_deciles_<stream>` = observed
+(model-free) % of days followed by a gap by decile of yesterday's within-person steps, one line per cohort; `risk_curve` = population-average % chance of a gap tomorrow at
+-1 SD / 0 (usual) / +1 SD; `cohort_forest` = the primary effect per cohort with the LRT for a cohort difference; `forest_gap_definition` = the primary effect for gaps >= 1, 2, 3, 7 days;
+`gap_dose_response` = model B estimates at gap lengths 1, 2, 3, 5, 13 days, unadjusted vs adjusted; `post_gap_activity_observed_<stream>` = observed steps after gaps by day since the return,
+with the model B estimate drawn apart; `gap_length_probs` = model C predicted probability of each length group at -1 SD / 0 / +1 SD; `collinearity_gvif_<stream>` = VIF-equivalent of every term.
 
 Odds ratios are never presented as risk ratios, the curves and probabilities are marginal (population-average,
 stated in each caption), and all associations are non-causal.
@@ -177,9 +216,11 @@ one at a time in a worker and are each checkpointed, but their total time (hours
 
 ## Known limitations
 
-* The within-person z-score `w_` uses the person's whole-follow-up mean (and a pooled SD), so day t is
-  compared with a baseline that includes later days. The trailing-baseline sensitivity (mean of the previous 14
-  observed days) removes this; keep both in view when interpreting the primary result.
+* The primary standardization uses only earlier observed days (>= 7), so the first week of every person is not in the models and `w`, `b` are noisier early in follow-up;
+  the full-period standardization (look-ahead) is the sensitivity analysis, and the trailing 14-day baseline a second one. Keep them in view when interpreting the primary result.
+* Wear-consistency strata are defined from the same observed days as the outcome; the stratified estimates describe effect modification by wear pattern, not a causal effect of
+  consistent wear, and the strata differ in composition (see the composition table).
+* Collinearity diagnostics are reported, not acted on: no predictor is removed because of a high VIF; the between-person terms of correlated behaviours are the usual suspects.
 * The primary and model-D fits need about 10 GB each at full size. On a machine with less free memory the guard
   stops them with an explanation rather than subsampling; `cfg$model$sample_persons` is the documented, explicit
   alternative (same model, wider intervals, recorded in the checkpoint key).
@@ -206,25 +247,28 @@ The number of people per overlap combination is written to `L1/cohort_overlap.ts
   were followed by resumption".
 * **Gap**: >= 1 consecutive missing days. **Gap onset on day t**: day t-1 observed, day t missing.
 * **Risk set** (one row per observed day except the last): outcome = a gap starts the next day.
-* **Prior-day predictors**: `w_` = how unusual the day was for that person (per within-person SD),
-  `b_` = how high/low the person is overall. Odds ratios are *per 1 SD below the person's usual*.
+* **Prior-day predictors**: `w_` = how many within-person SDs the day was above (+) the person's own usual, `b_` = how many SDs the person's usual is above the average person; the usual is the mean of
+  the person's observed days **before** the day (pre-gap standardization). Odds ratios are *per +1 SD higher than the person's usual* (OR = exp(coefficient) for every term).
+* **Wear consistency**: observed days / days between the first and last record, per stream; Consistent = at or above the stream's median (`cfg$wear`).
 
 ## Analyses and their role
 
 | | Question | Role |
 |---|---|---|
-| Primary | Does a lower-than-usual prior day (steps) raise the odds a gap starts? Joint adjusted model, gap >= 1 day | the only pre-specified test (`cfg$primary_term`), Holm across streams |
+| Primary | Is a higher-than-usual prior day (steps) followed by lower odds that a gap starts? Joint adjusted model, gap >= 1 day | the only pre-specified test (`cfg$primary_term`), Holm across streams |
 | A | Gap history (length of last gap, days since return) as adjustment | nuisance adjustment; first-gap-only check |
 | B | Is activity on the first full day back lower after longer gaps? | MNAR *plausibility* |
 | C | Does low prior-day activity predict a longer gap? (ordinal) | exploratory; only if proportional odds holds |
 | D | Same as primary with gaps >= 2, 3, 7 days | main secondary analysis |
-| Sensitivity | trailing baseline, partial wear, first gap only, main-sleep-only, conditional logit, cluster-robust SEs, spline, random slope | same estimand, other assumptions |
+| Sensitivity | **full-observation-period standardization**, trailing baseline, partial wear, first gap only, main-sleep-only, conditional logit, cluster-robust SEs, spline, random slope | same estimand, other assumptions |
+| Stratified | primary onset model, model B and model C within consistent / inconsistent wear; strata compared with an interaction test | effect modification by wear pattern; descriptive of strata first |
+| Diagnostics | generalized VIF of every term of every model; joint Wald tests of factor / spline terms | reported, no predictor is removed |
 
 Gap length is **never** a predictor of whether a gap starts (it is only known after the gap).
 
 ## Read the results carefully
 
-* Gaps preceded by lower activity show that missingness is **informative** (not completely at
+* Gaps preceded by a different activity level than usual show that missingness is **informative** (not completely at
   random). They do not prove MNAR: that depends on the unobserved activity *during* the gap.
 * The data were filtered upstream (>= 70% observed, longest gap <= 14 days, >= 21 days). Gap length
   is therefore limited to 1-14 days, long-gap effects are under-represented, and everything is

@@ -30,6 +30,14 @@ BQ_STREAM_TABLES <- list(
                            "minute_in_zone", "calorie_count"))
 )
 
+# Optional extra export (not part of the default run): the Fitbit device table, one row per person x device x day.
+# Columns asked for: the device version, plus the keys needed to attach it to a person and a day, and device_type
+# (the table also contains Fitbit scales, which are not wearables).
+# Whether the CDR has this table and these columns is checked first with bq_probe_device_table(); whether every person has a
+# device version is checked with bq_device_coverage().
+BQ_DEVICE_TABLE <- "device"
+BQ_DEVICE_COLS  <- c("person_id", "device_date", "device_version", "device_type")   # device_type: the table also holds scales (SCALE)
+
 # "123, 456, 789" - the person ids of one cohort, as used in the WHERE ... IN (...) clause.
 pid_in_clause <- function(person_ids) paste(person_ids, collapse = ", ")
 
@@ -66,6 +74,15 @@ bq_stream_sql <- function(stream, person_ids) {
     WHERE
         person.person_id IN (", ids, ")"))
   }
+  if (stream == "device") {
+    return(paste0("
+    SELECT
+        ", paste0(BQ_DEVICE_TABLE, ".", BQ_DEVICE_COLS, collapse = ",\n        "), "
+    FROM
+        `", BQ_DEVICE_TABLE, "` ", BQ_DEVICE_TABLE, "
+    WHERE
+        ", BQ_DEVICE_TABLE, ".PERSON_ID IN (", ids, ")"))
+  }
   spec <- BQ_STREAM_TABLES[[stream]]
   if (is.null(spec)) stop("unknown stream for export: ", stream, call. = FALSE)
   paste0("
@@ -95,6 +112,85 @@ bq_executor <- function(sql, path, cfg) {
   bigrquery::bq_table_save(bigrquery::bq_dataset_query(cdr, sql, billing = billing),
                            path, destination_format = "CSV")
   invisible(path)
+}
+
+# Is the device export feasible in this CDR? Reads 5 rows of the device table and reports which of the wanted columns exist.
+# Nothing is written. `sampler(sql)` returns a data.frame; the default runs the query in the CDR (billing project and dataset
+# from cfg$export, as bq_executor does).
+bq_probe_device_table <- function(cfg, columns = BQ_DEVICE_COLS, sampler = NULL) {
+  if (is.null(sampler)) sampler <- function(sql) {
+    cdr <- cfg$export$cdr; billing <- cfg$export$billing
+    if (!nzchar(billing)) stop("no billing project: set cfg$export$billing", call. = FALSE)
+    bigrquery::bq_table_download(bigrquery::bq_dataset_query(cdr, sql, billing = billing), n_max = 5L)
+  }
+  s <- sampler(paste0("SELECT * FROM `", BQ_DEVICE_TABLE, "` LIMIT 5"))
+  have <- tolower(names(s))
+  out <- data.table(column = columns, in_table = tolower(columns) %in% have)
+  list(columns_check = out, all_found = all(out$in_table), table_columns = names(s), sample = utils::head(as.data.frame(s), 5L))
+}
+
+# Does every person have a device version? One query per cohort, nothing is written.
+# The CDR device table holds Fitbit SCALES (device_type SCALE, e.g. "Aria Air") as well as wearable trackers, so a person who only owns
+# a scale has a device_version but no wearable. Everything below that says "version" counts non-scale devices only.
+#   n_people                  people of the cohort in final_pid
+#   n_with_activity           ... with at least one activity_summary day (the people the analysis can use)
+#   n_with_device_row         ... with at least one row in the device table (any device type)
+#   n_with_version            ... with a non-empty device_version on a non-scale device
+#   n_activity_with_version   people with activity AND such a device version (share: pct_activity_with_version, the number that matters)
+#   n_activity_days / n_activity_days_with_version   activity days, and those with a non-scale device_version row on the same date
+#                             (rows without a device_date cannot be matched to a day, so this share is a lower bound)
+bq_device_coverage_sql <- function(person_ids) {
+  ids <- pid_in_clause(person_ids)
+  paste0("
+    WITH a AS (
+        SELECT person_id, CAST(date AS DATE) AS day FROM `activity_summary` WHERE person_id IN (", ids, ")
+    ), dp AS (
+        SELECT person_id, CAST(device_date AS DATE) AS day FROM `", BQ_DEVICE_TABLE, "`
+        WHERE person_id IN (", ids, ") AND device_version IS NOT NULL AND TRIM(CAST(device_version AS STRING)) != ''
+          AND (device_type IS NULL OR UPPER(CAST(device_type AS STRING)) != 'SCALE')
+    ), d AS (
+        SELECT DISTINCT person_id, day FROM dp WHERE day IS NOT NULL
+    )
+    SELECT
+        (SELECT COUNT(DISTINCT person_id) FROM a) AS n_with_activity,
+        (SELECT COUNT(DISTINCT person_id) FROM `", BQ_DEVICE_TABLE, "` WHERE person_id IN (", ids, ")) AS n_with_device_row,
+        (SELECT COUNT(DISTINCT person_id) FROM dp) AS n_with_version,
+        (SELECT COUNT(DISTINCT a.person_id) FROM a JOIN dp ON a.person_id = dp.person_id) AS n_activity_with_version,
+        (SELECT COUNT(*) FROM a) AS n_activity_days,
+        (SELECT COUNT(*) FROM a JOIN d ON a.person_id = d.person_id AND a.day = d.day) AS n_activity_days_with_version")
+}
+
+# Which devices are there? People and rows per device_type and device_version (all cohorts together), most common first.
+bq_device_versions_sql <- function(person_ids) {
+  paste0("
+    SELECT device_type, device_version, COUNT(DISTINCT person_id) AS n_people, COUNT(*) AS n_rows
+    FROM `", BQ_DEVICE_TABLE, "`
+    WHERE person_id IN (", pid_in_clause(person_ids), ")
+    GROUP BY device_type, device_version
+    ORDER BY n_people DESC")
+}
+
+bq_device_versions <- function(cfg, final_pid, sampler = NULL) {
+  if (is.null(sampler)) sampler <- default_bq_sampler(cfg)
+  as.data.table(sampler(bq_device_versions_sql(unique(final_pid$person_id))))
+}
+
+default_bq_sampler <- function(cfg) function(sql) {
+  cdr <- cfg$export$cdr; billing <- cfg$export$billing
+  if (!nzchar(billing)) stop("no billing project: set cfg$export$billing", call. = FALSE)
+  bigrquery::bq_table_download(bigrquery::bq_dataset_query(cdr, sql, billing = billing))
+}
+
+bq_device_coverage <- function(cfg, final_pid, cohorts = cfg$cohorts, sampler = NULL) {
+  if (is.null(sampler)) sampler <- default_bq_sampler(cfg)
+  out <- rbindlist(lapply(cohorts, function(co) {
+    ids <- final_pid[cohort == co, person_id]
+    r <- as.data.table(sampler(bq_device_coverage_sql(ids)))
+    cbind(data.table(cohort = co, n_people = length(ids)), r[, lapply(.SD, as.numeric)])
+  }))
+  out[, `:=`(pct_activity_with_version = round(100 * n_activity_with_version / n_with_activity, 1),
+             pct_days_with_version     = round(100 * n_activity_days_with_version / n_activity_days, 1))]
+  out[]
 }
 
 # The executor used when none is given: bq_executor with the settings of `cfg`.

@@ -87,6 +87,8 @@ build_onset_formula <- function(preds, adjusted, k, baseline = "whole", drop_col
 #   drop_partial  TRUE -> drop days flagged as partial wear (own stream or activity)
 #   first_gap     TRUE -> keep only days up to each person's first gap onset
 #   cohort        a cohort label -> fit within that cohort only
+#   strata        data.table(person_id, stratum): keep only the people listed and add the column `stratum` (a factor)
+#   stratum       one level of `strata` -> fit within that stratum only (e.g. consistent / inconsistent wear)
 build_onset_data <- function(bundle, spec, cfg, variant = list()) {
   baseline <- variant$baseline %||% "whole"
   pre   <- if (baseline == "trailing") "tw_" else "w_"
@@ -107,24 +109,65 @@ build_onset_data <- function(bundle, spec, cfg, variant = list()) {
   if (isTRUE(variant$first_gap)) keep <- keep & first_gap_rows(rs)
   if (!is.null(variant$cohort))  keep <- keep & (rs$cohort == variant$cohort)
   if (isTRUE(variant$drop_partial)) keep <- keep & !(rs$pw_own %in% TRUE) & !(rs$pw_act %in% TRUE)
+  if (!is.null(variant$strata)) {
+    st <- variant$strata$stratum[match(rs$person_id, variant$strata$person_id)]
+    keep <- keep & !is.na(st)
+    if (!is.null(variant$stratum)) keep <- keep & (as.character(st) == variant$stratum)
+  }
 
   # only the columns this model uses (the bundle has ~30; copying all of them dominated memory)
   adj_cols <- c("cohort", "age10", "sex2", "dow_t", "study_day", "year_t",
                 "prev_gap_len", "any_prior_gap", "days_since_return")
   out_cols <- unique(c("person_id", ycol, paste0(pre, preds), paste0("b_", preds),
                        if (spec$adjusted) adj_cols))
+  if (spec$adjusted) {                                                     # calendar-year levels from the whole risk set (see year_level_map)
+    ev_col <- if ("y_ge1" %in% names(rs)) "y_ge1" else ycol
+    ym <- year_level_map(rs$year_t, rs[[ev_col]], cfg$model$year_min_events %||% 10L)
+  }
   out <- rs[keep, ..out_cols]
+  if (!is.null(variant$strata)) {
+    lv <- levels(factor(variant$strata$stratum))
+    out[, stratum := factor(as.character(variant$strata$stratum[match(person_id, variant$strata$person_id)]), levels = lv)]
+  }
 
   if (!is.null(cfg$model$sample_persons)) {
     ids <- sample_person_ids(out$person_id, cfg$model$sample_persons, cfg$seed)
     out <- out[person_id %in% ids]
   }
   if (spec$adjusted) {
+    out[, year_t := factor(ym$map[as.character(year_t)], levels = ym$levels)]
     out[, `:=`(prev_gap_len_l = log1p(prev_gap_len), days_since_return_l = log1p(days_since_return))]
     out[, c("prev_gap_len", "days_since_return") := NULL]
   }
   attr(out, "ycol") <- ycol
   out[]
+}
+
+# Calendar year as a factor, built ONCE per stream from the whole risk set (never from the subset of one analysis), so that the primary
+# model, models D, the sensitivity fits and every cohort / wear stratum use the same levels and the same reference and their year
+# terms are comparable.
+#   pooling    years with fewer than `min_events` gap starts (outcome y_ge1) are merged with the neighbouring calendar year that has
+#              more of them, until every level has enough events: a level without events has no finite estimate (separation), and its
+#              coefficient and standard error are meaningless. A pooled level is labelled "2010-2012".
+#   reference  the level with the MOST gap starts. A contrast against the reference has variance var(level) + var(reference), so the
+#              most informative level gives every contrast its smallest possible standard error; a sparse reference (e.g. the first year)
+#              makes the intercept and ALL year terms inestimable. The fit is the same whichever level is the reference.
+# Returns list(levels = labels, reference = label, map = year -> label).
+year_level_map <- function(year, events, min_events = 10L) {
+  yrs <- sort(unique(year[!is.na(year)]))
+  ev  <- vapply(yrs, function(y) sum(events[year == y], na.rm = TRUE), numeric(1))
+  grp <- as.list(seq_along(yrs)); gev <- ev
+  while (length(grp) > 1L && min(gev) < min_events) {
+    i <- which.min(gev)
+    nb <- c(if (i > 1L) i - 1L, if (i < length(grp)) i + 1L)
+    j <- nb[which.max(gev[nb] + 1e-9 * (nb > i))]                  # neighbour with more events (ties: the later year)
+    grp[[j]] <- sort(c(grp[[j]], grp[[i]])); gev[j] <- gev[j] + gev[i]
+    grp[[i]] <- NULL; gev <- gev[-i]
+  }
+  lab <- vapply(grp, function(ix) if (length(ix) == 1L) as.character(yrs[ix]) else paste0(yrs[min(ix)], "-", yrs[max(ix)]), character(1))
+  ref <- lab[which.max(gev)]
+  list(levels = c(ref, setdiff(lab, ref)), reference = ref,
+       map = stats::setNames(rep(lab, lengths(grp)), as.character(yrs[unlist(grp)])))
 }
 
 # Are there enough events to fit? (reported, not an error)
@@ -199,16 +242,13 @@ person_variance <- function(fit) {
 # Median odds ratio: the typical odds ratio between two random people.
 median_odds_ratio <- function(sigma2) exp(sqrt(2 * sigma2) * stats::qnorm(0.75))
 
-# Add odds ratios with a plain reading:
-#   w_ terms  -> OR per 1 SD LOWER than the person's usual (OR > 1: lower activity, more gaps)
-#   other     -> OR per +1 unit (SD for b_ terms; unit for the adjusters)
+# Add odds ratios, all in the NORMAL direction (a higher value of the predictor is a positive step; OR = exp(estimate)):
+#   w_ / tw_ terms -> OR per +1 SD HIGHER than the person's usual (OR < 1: higher activity, fewer gaps)
+#   b_ terms       -> OR per +1 SD higher person-level mean
+#   other          -> OR per +1 unit (or against the reference level for factors)
 add_odds_ratios <- function(tab) {
-  tab[, is_within := grepl("^t?w_", term)]
-  tab[, `:=`(or      = fifelse(is_within, exp(-estimate), exp(estimate)),
-             or_low  = fifelse(is_within, exp(-conf_high), exp(conf_low)),
-             or_high = fifelse(is_within, exp(-conf_low),  exp(conf_high)),
-             or_unit = fifelse(is_within, "per 1 SD below usual", "per +1 unit"))]
-  tab[, is_within := NULL]
+  tab[, `:=`(or      = exp(estimate), or_low = exp(conf_low), or_high = exp(conf_high),
+             or_unit = fifelse(grepl("^(t?w|b)_", term), "per +1 SD", "per +1 unit"))]
   tab[]
 }
 
@@ -224,6 +264,7 @@ fit_onset_spec_inner <- function(bundle, spec, cfg, variant = list(), keep_fit =
     spec_id = spec$spec_id %||% NA_character_, stream = spec$stream, set_name = spec$set_name,
     k = spec$k, adjusted = spec$adjusted, role = spec$role %||% NA_character_,
     baseline = variant$baseline %||% "whole", cohort_stratum = variant$cohort %||% "all",
+    wear_stratum = variant$stratum %||% "all", standardization = bundle$standardization %||% cfg$standardization$method,
     n_rows = ec$n_rows, n_persons = ec$n_persons, n_events = ec$n_events,
     n_persons_event = ec$n_persons_event)
 
@@ -257,7 +298,12 @@ fit_onset_spec_inner <- function(bundle, spec, cfg, variant = list(), keep_fit =
   info <- cbind(meta, status = if (ok) "ok" else "not_converged", sigma2 = s2,
                 mor = median_odds_ratio(s2), singular = sing, cov_b0_term = cov_b0_term,
                 note = paste(c(if (isTRUE(sing)) "singular fit (person variance ~ 0)", utils::head(unique(notes), 3L)), collapse = " | "))
-  res <- list(coef = coef, info = info, fit = if (keep_fit) fit else NULL)
+  # multicollinearity (GVIF per term) and joint Wald tests per term, from the fixed-effect covariance of this very fit
+  dg <- tryCatch(fixed_effect_diagnostics(stats::setNames(coef$estimate, coef$term), V, ftxt), error = function(e) NULL)
+  id_cols <- meta[1L, .(spec_id, stream, set_name, k, adjusted, role, baseline, cohort_stratum, wear_stratum, standardization)]
+  tag_meta <- function(tab) if (is.null(tab) || nrow(tab) == 0L) NULL else cbind(id_cols[rep(1L, nrow(tab))], tab)
+  res <- list(coef = coef, info = info, fit = if (keep_fit) fit else NULL,
+              gvif = if (!is.null(dg)) tag_meta(dg$gvif), wald = if (!is.null(dg)) tag_meta(dg$wald))
   rm(dat, fit); invisible(gc())          # give the memory back before the next model
   res
 }
@@ -282,7 +328,11 @@ check_fit_memory <- function(bundle, spec, cfg, variant = list(), extra_cols = 0
   if (!isTRUE(cfg$resources$memory_guard)) return(invisible(TRUE))
   n_pred <- length(spec$predictors[[1L]])
   n_cols <- 2 * n_pred + (if (isTRUE(spec$adjusted)) 36 else 0) + 3 + extra_cols
-  n_rows <- if (!is.null(variant$cohort)) sum(bundle$rs$cohort == variant$cohort, na.rm = TRUE) else nrow(bundle$rs)
+  n_rows <- if (!is.null(variant$cohort)) sum(bundle$rs$cohort == variant$cohort, na.rm = TRUE)
+            else if (!is.null(variant$strata)) {
+              st <- variant$strata$stratum[match(bundle$rs$person_id, variant$strata$person_id)]
+              sum(!is.na(st) & (is.null(variant$stratum) | as.character(st) %in% variant$stratum))
+            } else nrow(bundle$rs)
   samp   <- effective_sample(cfg, spec$role)
   if (!is.null(samp) && !is.null(bundle$n_persons)) n_rows <- n_rows * min(1, samp / bundle$n_persons)
   need <- safety * estimate_fit_memory_gb(n_rows, n_cols, cfg$resources$bytes_per_cell)
@@ -312,7 +362,7 @@ fit_onset_spec <- function(bundle, spec, cfg, variant = list(), keep_fit = FALSE
 # Marginal (population-averaged) gap risk on the next day, integrating over the
 # person random intercept. `coef` is a fitted coefficient table, `term` the within
 # term; all other covariates are held at 0 / reference.
-# at = within-person z-scores, e.g. c(-1, 0, 1) = 1 SD below usual, usual, 1 SD above.
+# at = within-person z-scores, e.g. c(-1, 0, 1) = -1 SD, 0 (usual), +1 SD (higher z = more steps).
 marginal_risk <- function(coef, term, sigma2, at = c(-1, 0, 1), n_grid = 201L,
                           cov_b0_term = NA_real_, n_draw = 2000L, seed = 1L) {
   which_term <- term                                    # `term` is also a column of `coef`
@@ -340,29 +390,39 @@ marginal_risk <- function(coef, term, sigma2, at = c(-1, 0, 1), n_grid = 201L,
 
 # ---- cohort differences in the primary effect ----------------------------------------------------
 
-# Likelihood-ratio test: does the within-person effect differ by cohort?
-test_cohort_interaction_inner <- function(bundle, spec, cfg, term = cfg$primary_term) {
+# Likelihood-ratio test: does the within-person effect (`term`) differ between the groups of `by`?
+#   by = "cohort"  (default): the model with vs without the term x cohort interaction; cohort is already an adjuster.
+#   by = "stratum" (needs variant$strata, e.g. consistent vs inconsistent wear): the stratum main effect is added to both
+#   models, so the null model is "the same effect in every stratum, strata may differ in their overall gap risk".
+# One chi-square test on df = (number of groups - 1); it is the formal comparison of the groups, not a comparison of
+# which group's own estimate is significant.
+test_group_interaction_inner <- function(bundle, spec, cfg, term = cfg$primary_term, by = "cohort", variant = list()) {
   spec <- data.table::as.data.table(spec)
-  dat  <- build_onset_data(bundle, spec, cfg)
+  dat  <- build_onset_data(bundle, spec, cfg, variant)
   ycol <- attr(dat, "ycol")
-  if (!enough_events(event_counts(dat, ycol), cfg)) {
-    return(data.table(term = term, chisq = NA_real_, df = NA_integer_, p = NA_real_,
-                      status = "not_estimable"))
+  if (!enough_events(event_counts(dat, ycol), cfg) || uniqueN(dat[[by]]) < 2L) {
+    return(data.table(term = term, by = by, chisq = NA_real_, df = NA_integer_, p = NA_real_, status = "not_estimable"))
   }
   drop_cols <- constant_adjuster_cols(dat, spec$adjusted)
-  f0 <- build_onset_formula(spec$predictors[[1L]], spec$adjusted, spec$k, drop_cols = drop_cols)
-  f1 <- paste0(sub(" \\+ \\(1 \\| person_id\\)$", "", f0), " + ", term, ":cohort + (1 | person_id)")
-  l0 <- fit_loglik(f0, dat, cfg); l1 <- fit_loglik(f1, dat, cfg)          # one model in memory at a time
-  chisq <- 2 * (l1$ll - l0$ll)
+  f0 <- sub(" \\+ \\(1 \\| person_id\\)$", "", build_onset_formula(spec$predictors[[1L]], spec$adjusted, spec$k, drop_cols = drop_cols))
+  if (by != "cohort") f0 <- paste0(f0, " + ", by)
+  l0 <- fit_loglik(paste0(f0, " + (1 | person_id)"), dat, cfg)
+  l1 <- fit_loglik(paste0(f0, " + ", term, ":", by, " + (1 | person_id)"), dat, cfg)     # one model in memory at a time
+  chisq <- max(0, 2 * (l1$ll - l0$ll))
   df <- l1$df - l0$df
-  data.table(term = term, chisq = chisq, df = df,
+  data.table(term = term, by = by, chisq = chisq, df = df,
              p = stats::pchisq(chisq, df, lower.tail = FALSE), status = "ok")
 }
 
-test_cohort_interaction <- function(bundle, spec, cfg, term = cfg$primary_term) {
+test_group_interaction <- function(bundle, spec, cfg, term = cfg$primary_term, by = "cohort", variant = list()) {
   # two fits run one after the other in the same worker, whose memory is not returned in between (measured: ~15% more)
-  check_fit_memory(bundle, as.list(spec), cfg, extra_cols = nlevels(factor(bundle$rs$cohort)) - 1L, safety = 1.25)
-  isolated(cfg, test_cohort_interaction_inner(bundle, spec, cfg, term))
+  check_fit_memory(bundle, as.list(spec), cfg, variant, extra_cols = 3L, safety = 1.25)
+  isolated(cfg, test_group_interaction_inner(bundle, spec, cfg, term, by, variant))
+}
+
+test_cohort_interaction <- function(bundle, spec, cfg, term = cfg$primary_term) {
+  r <- test_group_interaction(bundle, spec, cfg, term, by = "cohort")
+  r[, by := NULL][]
 }
 
 # ---- collinearity check ---------------------------------------------------------------------------
@@ -462,6 +522,8 @@ collect_onset_results <- function(ckpt_dir, cfg, data_keys) {
   pick <- function(ids) rbindlist(ex$values[ex$units$id %in% ids], fill = TRUE)
   out <- list(onset_coefficients = rbindlist(lapply(sp$values, `[[`, "coef"), fill = TRUE),
               onset_models       = rbindlist(lapply(sp$values, `[[`, "info"), fill = TRUE),
+              onset_collinearity = rbindlist(lapply(sp$values, `[[`, "gvif"), fill = TRUE),
+              onset_term_tests   = rbindlist(lapply(sp$values, `[[`, "wald"), fill = TRUE),
               vif = pick("vif"), cohort_interaction = pick("cohort_interaction"),
               cohort_specific = pick(paste0("cohort_", cfg$cohorts)), risk_unadjusted = pick("risk_unadjusted"),
               onset_deciles = pick("deciles"),

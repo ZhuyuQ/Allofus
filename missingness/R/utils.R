@@ -261,12 +261,20 @@ ckpt_hash <- function(x) {
 # made with another sample size are re-run, while Cell 17's exploratory sample does not hide the
 # full-data results of the other models.
 ckpt_cfg_part <- function(cfg, kind) {
-  core <- cfg[c("predictors", "own_predictors", "activity_predictors", "seed", "cohorts", "reference_cohort", "overlap")]
-  model_part <- cfg$model[c("engine", "nAGQ", "min_events", "min_persons_with_events")]
-  if (kind %in% c("gapB", "gapC")) return(c(core, list(gap_models = cfg$gap_models, boot = cfg$boot,
-                                                      predict = cfg$predict, kind = kind)))
+  core <- cfg[c("predictors", "own_predictors", "activity_predictors", "seed", "cohorts", "reference_cohort", "overlap",
+                "standardization")]
+  core$or_direction <- "per +1 SD higher"       # odds ratios are expressed per +1 SD HIGHER; results saved with another convention are never reused
+  # bumped whenever the content of the stored results changes (3: pre-gap standardization, GVIF / Wald tables, all terms of the sensitivity fits)
+  core$analysis_version <- 3L
+  # 4 (onset models only): calendar years pooled when sparse and the reference year is the one with the most gap starts, not the first; gap models B / C are unaffected and keep 3
+  if (!kind %in% c("gapB", "gapC", "wear_gapB", "wear_gapC")) core$analysis_version <- 4L
+  model_part <- cfg$model[c("engine", "nAGQ", "min_events", "min_persons_with_events", "year_min_events")]
+  if (kind %in% c("gapB", "gapC", "wear_gapB", "wear_gapC"))
+    return(c(core, list(gap_models = cfg$gap_models, boot = cfg$boot, predict = cfg$predict, kind = kind,
+                        wear = if (startsWith(kind, "wear")) cfg$wear[c("method", "threshold")])))
   extra <- list(onset = cfg$onset, model = model_part, primary_term = cfg$primary_term, kind = kind)
   if (kind == "sensitivity") extra$boot <- cfg$boot
+  if (startsWith(kind, "wear")) extra$wear <- cfg$wear[c("method", "threshold")]    # the classification rule is part of every stratified result
   c(core, extra)
 }
 

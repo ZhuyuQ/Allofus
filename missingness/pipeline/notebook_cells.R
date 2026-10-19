@@ -8,6 +8,13 @@
 # cell you were in. Every finished model is a checkpoint in OUT_DIR/checkpoints and is skipped; only
 # missing, failed or outdated models run again. You never need to repeat Cells 5-9 (ETL) unless L1 is gone.
 #
+# ORDER OF THE ANALYSES (the reading order of README.md / STATISTICS.md):
+#   descriptive statistics (Cell 11, 11b) -> data quality and wear consistency (Cell 11c) -> primary models (Cells 12-15) ->
+#   sensitivity analyses (Cell 16) -> exploratory specifications (Cell 17) -> stratified analyses by wear consistency (Cell 18) ->
+#   export (Cell 19). Multicollinearity diagnostics (GVIF) are written by every model cell; Cell 18 prints their summary.
+# STANDARDIZATION: every within- and between-person z-score uses only data observed BEFORE each day / gap (cfg$standardization);
+#   Cell 16 adds the full-observation-period standardization as a sensitivity analysis.
+#
 # RESOURCES (cfg$resources, defaults for 4 CPU cores / 32 GB RAM): one heavy model at a time in its own
 # worker process, at most 24 GB used by a model and 4 GB always left free. Change them in Cell 2.
 # ==============================================================================
@@ -76,6 +83,16 @@ exports <- run_bq_exports(cfg, final_pid, cohorts = "Prostate")
 # ==== CELL 6b
 exports <- run_bq_exports(cfg, final_pid)
 
+# ==== CELL 6c   (OPTIONAL, separate from the exports above: the Fitbit device version of each person; nothing else is changed)
+# 1) is there a device table with a device_version column?  2) does every person have a device version?  3) export it (4 files, one per cohort).
+probe <- bq_probe_device_table(cfg)
+print(probe$columns_check); print(probe$sample)
+stopifnot("the device table has no device_version column (see probe$table_columns)" = probe$all_found)
+dev_cov <- bq_device_coverage(cfg, final_pid)
+print(bq_device_versions(cfg, final_pid), nrows = 100)   # which devices exist (device_type SCALE = a Fitbit scale, not a wearable)
+print(dev_cov)      # pct_activity_with_version = share of people with activity data who have a device version; pct_days_with_version = share of their activity days
+dev_exports <- run_bq_exports(cfg, final_pid, streams = "device")
+
 # ==== CELL 7
 for (co in cfg$cohorts) for (s in c("activity", "sleep", "hr", "meta")) {
   n <- tryCatch(length(gsutil_ls(export_path(cfg, co, s))), error = function(e) 0)
@@ -87,6 +104,11 @@ etl <- run_etl(cfg, L1_DIR, final_pid_path = FINAL_PID, cci_path = CCI_FILE)   #
 print(etl$summary)                                   # rows / people / date range of each day table
 print(etl$dropped_columns)                           # columns removed because they are mostly NA or constant
 print(etl$persons[, .N, by = cohort])
+
+# ==== CELL 8b   (OPTIONAL, ~1 min: device version -> L1. Reads the 4 device exports of Cell 6c; the day tables and persons.rds are NOT touched,
+#                no model result is invalidated. Writes device_person.rds, device_timeline.rds, device_status.tsv into L1_DIR.)
+dev <- run_etl_device(cfg, L1_DIR)
+print(dev$summary)                                   # people per cohort and status (wearable version known / scale only / no device record ...)
 
 # ==== CELL 9
 store <- open_day_store(cfg, L1_DIR)
@@ -122,8 +144,39 @@ print(res$missing_pct_by_stratum_tests[family == "groups_within_cohort" & test !
 print(res$missing_trend_tests[, .(stream, variable, cohort, unit, or = round(odds_ratio, 3), or_low = round(or_low, 3), or_high = round(or_high, 3),
       p = signif(p, 3), p_holm = signif(p_holm, 3), status)])
 
-# ==== CELL 12   (Cells 12-14: onset models; new figures per stream: onset_forest_year_<stream> + onset_forest_other_<stream> = all predictors in two plots, onset_deciles_<stream> = observed gap rate by decile.
-#                 Finished models are skipped; only the small "deciles" unit is computed on the first run after the update)
+# ==== CELL 11c   (data quality: wear consistency, descriptive only - no model; ~1 min)
+# Wear consistency = observed days / days between the first and last record, per person and stream. The classification rule
+# (consistent = at or above the stream's median) is fixed in cfg$wear and written to wear_consistency_classification BEFORE any
+# stratified model is fitted in Cell 18. Figures: wear_consistency_distribution, wear_consistency_composition.
+res <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, OUT_DIR, stages = "wear_consistency",
+                                model_streams = c("activity", "sleep", "hr"))
+print(res$wear_consistency_classification[, .(stream, method, cutoff = round(threshold, 4), n_consistent, n_inconsistent)])
+print(res$wear_consistency_descriptive[, .(stream, group, n_people, coverage_median = round(coverage_median, 3),
+                                           gaps_per_100_observed_days = round(gaps_per_100_observed_days, 1), age_mean = round(age_mean, 1), pct_female = round(pct_female, 1))])
+print(res$wear_consistency_composition[imbalanced == TRUE, .(stream, variable, smd = round(smd, 2))])   # characteristics that differ between the strata
+
+# ==== CELL 11d   (data quality: missing Fitbit device version and device composition by cohort; person level, no model; needs Cells 6c and 8b; seconds)
+# WATCH data only: scales, clip-on trackers (One, Zip, Ultra, Classic) and phone tracking (MobileTrack) are NOT a watch version (cfg$device$forms / wrist_forms; the
+# default counts smartwatches and wristbands; use cfg$device$wrist_forms <- "smartwatch" for smartwatches only, then rerun Cells 8b and 11d).
+# Figures device_version_missing_and_composition (one bar per cohort: grey = no watch version, colours = watch family) and device_cohort_mix_by_version (the same table
+# read the other way: the cohort mix of each watch version), and the tables device_*:
+# missing share with Wilson intervals, chi-square / Cramer's V / Fisher tests, the model adjusted for age and sex, residuals, full version list.
+res <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, OUT_DIR, stages = "device")
+print(res$device_missing_by_cohort)
+print(res$device_tests[, .(test, chisq = round(chisq, 1), df, p_asymptotic = signif(p_asymptotic, 3), p_monte_carlo = signif(p_monte_carlo, 3), cramers_v = round(cramers_v, 3))])
+print(res$device_missing_vs_reference)
+
+# ==== CELL 11e   (person-level % of days missing against EVERY model variable: cohort, sex, watch version, age, between-person level of each predictor; ~2-4 min, no model of the gap outcome)
+# Figures outcome_by_variable_categorical (one figure: cohort / sex / watch version x stream) and outcome_by_variable_continuous_<stream>; tables outcome_variable_tests (overall rank test,
+# effect size with bootstrap interval, Holm over the variables of the stream), _contrasts (each level against the reference), _models (odds ratio of a missing day, unadjusted and adjusted), _summary, _bins.
+# The watch version needs Cells 6c and 8b; without them it is left out.
+res <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, OUT_DIR, stages = "variables")
+print(res$outcome_variable_tests[, .(stream, variable, test, n, p_holm = signif(p_holm, 3), effect_name, effect = round(effect, 3), low = round(effect_low, 3), high = round(effect_high, 3))])
+
+# ==== CELL 12   (Cells 12-14: onset models. Figures per stream: onset_forest_year_<stream> + onset_forest_other_<stream> = all predictors in two plots,
+#                 onset_deciles_<stream> = observed gap rate by decile, gap_definition_all_terms_*_<stream> (model D), exploratory_grid_effects_<stream>,
+#                 collinearity_gvif_<stream>. Predictors are standardized with data observed BEFORE each day (pre-gap); models saved by an older
+#                 version of the code are refitted once.)
 res <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, OUT_DIR, stages = "onset",
                                 onset_roles = c("primary", "secondary_threshold"),
                                 model_streams = "activity")
@@ -142,19 +195,26 @@ res <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, OUT_DIR, stage
 print(res$primary_test)
 
 # ==== CELL 15
-# New figures: gapB_forest_<stream> and gapC_forest_<stream> (all predictors of each model). They need every coefficient, so models
-# B and C saved by an older version of the code are refitted ONCE (checkpoint schema 2); model C is the slow one.
-# Models B and C: 6 independent units per stream (4 x B, 2 x C), each saved on its own. They are built from
+# Figures: gap_dose_response, gapB_forest_<stream>, gapC_forest_<stream> (all terms), post_gap_activity_observed_<stream> (observed steps after gaps
+# with the Model B estimate drawn apart). Days after a gap are standardized against the person's usual BEFORE the gap. Models saved by an older
+# version of the code are refitted ONCE; model C is the slow one. B_back2_adj_fullperiod / C_adj_fullperiod are the full-period sensitivity fits.
+# MVPA before the gap as an extra covariate (units B_back2_adj_mvpa, B_back2_adj_pre_mvpa, C_adj_mvpa; the existing units are NOT refitted): table
+# gap_mvpa_effects, figures gapB_mvpa_effect_<stream>, gapC_mvpa_effect_<stream>.
+# Models B and C: independent units per stream (the B and C specifications and their variants), each saved on its own. They are built from
 # the gaps and one activity predictor only (no person-day table), so they need little memory.
 res <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, OUT_DIR, stages = "gap_models",
                                 model_streams = c("activity", "sleep", "hr"))
 print(res$model_B_post_gap_activity[, .(stream, model_id, estimate = round(estimate, 3), p = signif(p, 3), status)])
 print(res$model_C_gap_length[, .(stream, model_id, or = round(or, 2), po_p = signif(po_p, 2), status)])
+# MVPA before the gap (per +1 SD higher than the person's usual): model B = SD change in activity on the first full day back, model C = odds ratio of a longer gap
+print(res$gap_mvpa_effects[term == "w_pre_day_mvpa", .(model, stream, model_id, estimate = round(estimate, 3), low = round(conf_low, 3), high = round(conf_high, 3),
+                                                       or = round(or, 2), or_low = round(or_low, 2), or_high = round(or_high, 2), n_gaps, vif_equiv = round(vif_equiv, 2))])
 cat("failed units:", nrow(res$unit_failures), "\n")      # 0 = nothing failed; otherwise run this cell again to retry them
 if (nrow(res$unit_failures) > 0L) print(res$unit_failures)
 
-# ==== CELL 16   (new figure per stream: sensitivity_forest_<stream> = every within-person predictor under every analysis; sensitivity units
-#                saved by an older version of the code are refitted ONCE (checkpoint schema 2) - this is the long cell)
+# ==== CELL 16   (sensitivity analyses, incl. the NEW full-period standardization; figures per stream: sensitivity_forest_<stream> = within-person
+#                predictors under every analysis, sensitivity_all_terms_other_/year_<stream> = ALL terms; units saved by an older version are
+#                refitted ONCE - this is the long cell)
 res <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, OUT_DIR, stages = "sensitivity",
                                 model_streams = c("activity", "sleep", "hr"))
 print(res$sensitivity[, .(stream, analysis, term, or = round(or, 2), p = signif(p, 3), status)])
@@ -167,7 +227,19 @@ res <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg_fast, OUT_DIR, 
                                 onset_roles = "exploratory", model_streams = c("activity", "sleep", "hr"))
 print(table(res$onset_models$role, res$onset_models$stream))
 
-# ==== CELL 18
+# ==== CELL 18   (stratified analyses by wear consistency: the primary onset model, model B and model C within each stratum; long)
+# The characterization of Cell 11c runs first inside this call. Reported per stratum: effect sizes with intervals, sample sizes, GVIF, convergence and
+# sparse-data flags; the strata are compared with a likelihood-ratio test of (steps x stratum) for the onset model and a Wald test of the difference of
+# two independent estimates for models B and C (wear_strata_comparison). Figures: wear_strata_primary_effect, wear_strata_*_all_terms_*.
+res <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, OUT_DIR, stages = "wear_strata",
+                                model_streams = c("activity", "sleep", "hr"))
+print(res$wear_strata_comparison[, .(model, stream, consistent = round(effect_consistent, 2), inconsistent = round(effect_inconsistent, 2),
+                                     p_difference = signif(p_difference, 3))])
+print(res$wear_strata_quality[, .(model, stream, stratum, n_people, n_events, events_per_coefficient = round(events_per_coefficient, 1), status, sparse, usable)])
+print(res$model_collinearity[figure == TRUE & flag != "ok", .(stream, analysis, term, vif_equiv = round(vif_equiv, 1), flag)])   # terms with a high / severe VIF-equivalent
+cat("failed units:", nrow(res$unit_failures), "\n")
+
+# ==== CELL 19
 CKPT <- file.path(OUT_DIR, cfg$checkpoint$dirname)
 print(checkpoint_report(CKPT, cfg)[, .N, by = .(kind, state)])     # valid / stale / failed / corrupt checkpoints
 cat(readLines(file.path(OUT_DIR, "results_summary.md")), sep = "\n")

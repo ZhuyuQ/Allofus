@@ -93,7 +93,7 @@ test_that("pipeline writes tables, figures and metadata; primary effect recovere
   expect_match(paste(readLines(file.path(out, "figures", "figure_captions.md")), collapse = " "), "part 2 of 2")
   expect_true(all(file.exists(file.path(out, c("run_config.json", "session_info.txt", "input_manifest.tsv")))))
   expect_equal(nrow(res$primary_test), 3L)
-  expect_true(all(res$primary_test$or > 1 & res$primary_test$p_holm < 0.05))
+  expect_true(all(res$primary_test$or < 1 & res$primary_test$p_holm < 0.05))     # per +1 SD higher steps: fewer gaps
 })
 
 test_that("the onset stage resumes from checkpoints, runs one stream at a time and collects everything finished", {
@@ -176,6 +176,11 @@ test_that("results accumulate across calls: gap-length models, sensitivity files
   expect_true(file.exists(file.path(out, "tables", "model_B_all_terms.tsv")))
   expect_true(all(file.exists(file.path(out, "figures", c("gapB_forest_activity.png", "gapB_forest_sleep.png")))))      # one forest plot of all predictors per stream
   expect_setequal(r$model_B_all_terms$stream, c("activity", "sleep"))
+  # MVPA before the gap: the effects table and one figure per model and stream
+  expect_true(file.exists(file.path(out, "tables", "gap_mvpa_effects.tsv")))
+  expect_true(all(file.exists(file.path(out, "figures", c("gapB_mvpa_effect_activity.png", "gapB_mvpa_effect_sleep.png")))))
+  mv <- r$gap_mvpa_effects; expect_setequal(mv[model == "B", stream], c("activity", "sleep"))
+  expect_true(all(mv[term == "w_pre_day_mvpa", !is.na(estimate) & conf_low < estimate & estimate < conf_high]))
 
   # a different sample size (the speed knob for exploratory models) must not hide earlier results
   r1 <- NULL; quiet(r1 <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, out, stages = "onset", onset_roles = "primary", model_streams = "activity"))
@@ -223,4 +228,46 @@ test_that("the sensitivity stage writes the all-predictor table and one forest p
   expect_true(file.exists(file.path(out, "figures", "sensitivity_forest_activity.png")))
   expect_true(file.exists(file.path(out, "figures", "forest_sensitivity.png")))
   expect_gt(nrow(r$sensitivity_all_terms), nrow(r$sensitivity[!analysis %in% c("spline_vs_linear", "random_slope")]))
+})
+
+test_that("wear consistency: the characterization alone fits no model; the stratified stage writes the criteria BEFORE any stratified model, then tables, figures and the figure index", {
+  cfg <- cfg_test()
+  inp <- suppressMessages(simulate_inputs(cfg, n_per_cohort = c(Insomnia = 60, Diabetes = 60, Healthy = 120, Prostate = 30), seed = 5))
+  out <- tempfile(); quiet <- function(expr) invisible(suppressWarnings(suppressMessages(capture.output(r <- expr))))
+  r1 <- NULL; quiet(r1 <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, out, stages = "wear_consistency", model_streams = c("activity", "sleep")))
+  expect_true(all(file.exists(file.path(out, "tables", paste0(c("wear_consistency_classification", "wear_consistency_descriptive", "wear_consistency_composition", "wear_consistency_by_person"), ".tsv")))))
+  expect_true(all(file.exists(file.path(out, "figures", c("wear_consistency_distribution.png", "wear_consistency_composition.png")))))
+  expect_false(dir.exists(file.path(out, "checkpoints")) && length(list.files(file.path(out, "checkpoints"))) > 0L)         # no model was fitted
+  expect_equal(r1$wear_consistency_classification$stream, c("activity", "sleep")); expect_true(all(r1$wear_consistency_classification$method == "median"))
+
+  r2 <- NULL; quiet(r2 <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, out, stages = "wear_strata", model_streams = "activity"))
+  ck <- file.path(out, "checkpoints"); wf <- list.files(ck, pattern = "^wear_", full.names = TRUE)
+  expect_gt(length(wf), 0L)
+  expect_lte(as.numeric(file.mtime(file.path(out, "tables", "wear_consistency_classification.tsv"))), min(as.numeric(file.mtime(wf))))   # criteria on disk before the first stratified fit
+  tabs <- c("wear_strata_onset_coefficients", "wear_strata_onset_models", "wear_strata_interaction", "wear_strata_comparison", "wear_strata_quality",
+            "wear_strata_onset_collinearity", "wear_strata_onset_term_tests", "model_collinearity", "model_term_tests")
+  expect_true(all(file.exists(file.path(out, "tables", paste0(tabs, ".tsv")))))
+  figs <- c("wear_strata_primary_effect", "wear_strata_onset_all_terms_other_activity", "wear_strata_onset_all_terms_year_activity", "collinearity_gvif_activity")
+  expect_true(all(file.exists(file.path(out, "figures", paste0(figs, ".png")))))
+  ix <- fread(file.path(out, "figures", "figure_index.tsv"))
+  expect_equal(ix[figure == "wear_strata_primary_effect.png", step], 5L); expect_equal(ix[figure == "collinearity_gvif_activity.png", step], 7L)
+  expect_equal(ix[figure == "wear_consistency_distribution.png", step], 3L)
+  expect_true(any(r2$model_collinearity$figure) && all(c("analysis", "term", "df", "vif_equiv", "flag") %in% names(r2$model_collinearity)))
+  expect_match(paste(readLines(file.path(out, "results_summary.md")), collapse = " "), "Wear consistency")
+  # the stage resumes
+  r3 <- NULL; quiet(r3 <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, out, stages = "wear_strata", model_streams = "activity"))
+  expect_true(all(r3$unit_run_status[grepl("wear_strata", stream), status] == "resumed"))
+})
+
+test_that("the full-period standardization is a separate sensitivity analysis, and the primary models use the pre-gap standardization", {
+  cfg <- cfg_test(); expect_equal(cfg$standardization$method, "pre_gap")
+  inp <- suppressMessages(simulate_inputs(cfg, n_per_cohort = c(Insomnia = 40, Diabetes = 40, Healthy = 80, Prostate = 20), seed = 6))
+  out <- tempfile(); r <- NULL
+  invisible(suppressWarnings(suppressMessages(capture.output(r <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, out, stages = c("onset", "sensitivity"),
+                                                                                         onset_roles = "primary", model_streams = "activity")))))
+  expect_equal(unique(r$onset_models$standardization), "pre_gap")
+  expect_true("full_period_standardization" %in% r$sensitivity$analysis)
+  f <- r$sensitivity[analysis == "full_period_standardization"]; m <- r$sensitivity[analysis == "main"]
+  expect_true(f$or < 1 && m$or < 1); expect_lt(abs(log(f$or) - log(m$or)), 0.3)                       # the same question, comparable answers
+  expect_true(file.exists(file.path(out, "figures", "sensitivity_all_terms_other_activity.png")))
 })

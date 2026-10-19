@@ -1,8 +1,8 @@
 # ==============================================================================
 # run_demo.R  - end-to-end smoke test on SIMULATED data (no real data needed).
 #   Rscript pipeline/run_demo.R <output_dir>
-# The simulated truth is: 1 SD lower steps than usual -> log-odds of a gap tomorrow
-# +0.5 (odds ratio 1.65). The primary estimate should be close to that.
+# The simulated truth is: +1 SD higher steps than usual -> log-odds of a gap tomorrow
+# -0.5 (odds ratio 0.61). The primary estimate should be close to that.
 # ==============================================================================
 args <- commandArgs(trailingOnly = TRUE)
 outdir <- if (length(args) >= 1L) args[1L] else file.path(tempdir(), "missingness_demo")

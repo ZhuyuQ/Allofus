@@ -65,3 +65,40 @@ test_that("a failed export puts the real reason in the error message", {
   expect_error(suppressMessages(capture.output(run_bq_exports(cfg, fp, cohorts = "Prostate", lister = function(p) stop("none")))),
                "4 export\\(s\\) failed. Reason.*project.dataset")
 })
+
+test_that("the optional device export asks for device_version and src_id, uses its own path, and is not part of the default run", {
+  sql <- bq_stream_sql("device", c(10, 20))
+  for (cl in c("person_id", "device_date", "device_version", "device_type")) expect_true(grepl(cl, sql, fixed = TRUE), info = cl)
+  expect_false(grepl("src_id", sql, fixed = TRUE))
+  expect_match(sql, "`device` device"); expect_match(sql, "IN \\(10, 20\\)")
+  cfg <- make_config(list(export = list(bucket = "gs://b", owner = "me@x.org", date = "20261006")))
+  expect_match(export_path(cfg, "Prostate", "device"), "pca_device/pca_device_\\*\\.csv$")
+  fp <- data.table(person_id = 1:8, cohort = rep(c("Diabetes", "Insomnia", "Prostate", "Healthy"), each = 2))
+  invisible(suppressMessages(capture.output(out <- mock_run(cfg, fp, streams = "device"))))
+  expect_length(out$calls, 4L); expect_true(all(grepl("_device_\\*\\.csv$", vapply(out$calls, `[[`, "", "path"))))
+})
+
+test_that("the device probe reports which wanted columns exist and writes nothing", {
+  cfg <- make_config()
+  ok <- bq_probe_device_table(cfg, sampler = function(sql) { expect_match(sql, "FROM `device` LIMIT 5"); data.frame(person_id = 1, device_date = "2022-01-01", device_version = "Charge 4", device_type = "TRACKER", src_id = "x", battery = "High") })
+  expect_true(ok$all_found); expect_true(all(ok$columns_check$in_table))
+  bad <- bq_probe_device_table(cfg, sampler = function(sql) data.frame(person_id = 1, device_date = "d", device_type = "TRACKER"))
+  expect_false(bad$all_found); expect_equal(bad$columns_check[in_table == FALSE, column], "device_version")
+})
+
+test_that("device coverage is asked per cohort with that cohort's ids and reported as percentages", {
+  cfg <- make_config()
+  fp <- data.table(person_id = 1:6, cohort = rep(c("Diabetes", "Healthy"), each = 3))
+  seen <- character()
+  cov <- bq_device_coverage(cfg, fp, cohorts = c("Diabetes", "Healthy"), sampler = function(sql) {
+    seen <<- c(seen, sql)
+    data.frame(n_with_activity = 3, n_with_device_row = 3, n_with_version = 2, n_activity_with_version = 2, n_activity_days = 300, n_activity_days_with_version = 150)
+  })
+  expect_match(seen[1L], "IN \\(1, 2, 3\\)"); expect_match(seen[2L], "IN \\(4, 5, 6\\)")
+  expect_equal(cov$cohort, c("Diabetes", "Healthy")); expect_equal(cov$n_people, c(3, 3))
+  expect_equal(cov$pct_activity_with_version, c(66.7, 66.7)); expect_equal(cov$pct_days_with_version, c(50, 50))
+  expect_match(seen[1L], "!= 'SCALE'", fixed = TRUE)                            # scales do not count as a wearable
+  v <- bq_device_versions(cfg, fp, sampler = function(sql) { expect_match(sql, "GROUP BY device_type, device_version"); expect_match(sql, "IN \\(1, 2, 3, 4, 5, 6\\)")
+    data.frame(device_type = c("TRACKER", "SCALE"), device_version = c("Charge 4", "Aria Air"), n_people = c(5, 3), n_rows = c(50, 9)) })
+  expect_equal(v$device_version, c("Charge 4", "Aria Air"))
+})

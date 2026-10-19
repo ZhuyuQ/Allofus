@@ -20,6 +20,7 @@
 export_path <- function(cfg, cohort, stream) {
   prefix <- cfg$cohort_prefix[[cohort]]
   spec   <- if (stream == "meta") list(stem = cfg$meta_stem, sharded = TRUE)
+            else if (stream == "device") list(stem = cfg$device_stem, sharded = TRUE)
             else cfg$streams[[stream]]
   folder <- paste0(prefix, "_", spec$stem)
   file   <- if (spec$sharded) paste0(folder, "_*.csv") else paste0(folder, ".csv")
@@ -136,6 +137,8 @@ open_day_store <- function(cfg, dir) {
     kind = "files", dir = dir, streams = streams, paths = paths,
     get = function(stream, cols = NULL) read_day_table(dir, stream, format, cols),
     persons = function() { if (is.null(persons)) persons <<- readRDS(paths[["persons"]]); persons },
+    device_person = function() { f <- file.path(dir, "device_person.rds"); if (file.exists(f)) readRDS(f) else NULL },       # written by run_etl_device(); NULL if not built
+    device_timeline = function() { f <- file.path(dir, "device_timeline.rds"); if (file.exists(f)) readRDS(f) else NULL },
     columns = function(stream) {                    # column names, from the ETL manifest when it has them
       mf <- file.path(dir, "manifest.tsv"); st <- stream
       cl <- if (file.exists(mf)) { m <- data.table::fread(mf); if ("columns" %in% names(m)) m$columns[m$stream == st] }
@@ -147,7 +150,7 @@ open_day_store <- function(cfg, dir) {
     }), class = "day_store")
 }
 
-as_day_store <- function(day_tables, persons = NULL) {
+as_day_store <- function(day_tables, persons = NULL, device = NULL) {     # device: list(person =, timeline =) from build_device_tables(), optional
   if (inherits(day_tables, "day_store")) return(day_tables)
   fp <- list()
   structure(list(
@@ -157,6 +160,8 @@ as_day_store <- function(day_tables, persons = NULL) {
       if (is.null(cols)) d else d[, unique(c("person_id", "date", cols)), with = FALSE]
     },
     persons = function() persons,
+    device_person = function() device$person,
+    device_timeline = function() device$timeline,
     columns = function(stream) names(day_tables[[stream]]),
     fingerprint = function(name) {
       if (is.null(fp[[name]])) fp[[name]] <<- fingerprint_table(if (name == "persons") persons else day_tables[[name]])
