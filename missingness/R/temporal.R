@@ -129,7 +129,7 @@ dow_counts <- function(pg, gaps) {
 # A person random intercept allows for people who are simply more gap-prone.
 fit_dow_model <- function(counts, persons, cfg, adjusted = FALSE) {
   d <- merge(counts[, .(person_id, dow, num, den)],
-             persons[, .(person_id, cohort, age10 = (age_first - 60) / 10,
+             persons[, .(person_id, cohort, age10 = age_first / 10,
                          sex2 = factor(as.character(sex), levels = c("Female", "Male")))],
              by = "person_id")
   d[, obs := den - num]

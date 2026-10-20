@@ -60,7 +60,7 @@ test_that("every figure the pipeline can make has a caption", {
   nm <- c("missing_pct_by_cohort", "longest_gap_by_cohort", "gap_ecdf", "gap_length_distribution", "heatmap_sleep", "transition",
           "missing_by_study_week", "missing_by_year", "missing_by_weekday", "metrics_hr_by_sex", "onset_primary_forest",
           "forest_gap_definition", "risk_curve", "cohort_forest", "forest_sensitivity", "gap_dose_response", "gap_length_probs",
-          "onset_forest_year_activity", "onset_forest_other_hr", "sensitivity_forest_sleep", "gapB_forest_activity", "gapC_forest_hr", "onset_deciles_sleep")
+          "onset_forest_other_activity", "onset_forest_other_hr", "sensitivity_forest_sleep", "gapB_forest_activity", "gapC_forest_hr", "onset_deciles_sleep")
   expect_false(anyNA(vapply(nm, caption_for, character(1))))
   expect_true(is.na(caption_for("not_a_figure")))
   d <- tempfile(); write_figure_captions(c("gap_ecdf", "risk_curve"), d)
@@ -145,23 +145,19 @@ test_that("one forest plot with all predictors per stream for the onset, sensiti
   cfg <- make_config(); geoms <- function(p) vapply(p$layers, function(l) class(l$geom)[1L], "")
   built <- function(p, sized = TRUE) { expect_s3_class(p, "ggplot"); expect_silent(suppressWarnings(ggplot2::ggplot_build(p))); if (sized) expect_equal(length(attr(p, "size")), 2L) }
   terms <- c("(Intercept)", "w_act_steps", "w_act_sedentary", "b_act_steps", "b_act_sedentary", "cohortDiabetes", "age10", "sex2Male",
-             "dow_tTue", "splines::ns(study_day, 3)1", "factor(year_t)2021", "prev_gap_len_l", "any_prior_gap", "days_since_return_l")
+             "dow_tTue", "splines::ns(study_day, 3)1", "deviceVersa", "cci", "prev_gap_len_l", "any_prior_gap", "days_since_return_l")
   co <- data.table(stream = "activity", role = "primary", term = terms, estimate = 0.1, or = 1.2, or_low = 1.1, or_high = 1.3, n_events = 50L, n_persons = 30L)
   co <- rbind(co, copy(co)[, stream := "sleep"][term == "w_act_steps", term := "w_sleep_eff"])
-  co <- rbind(co, copy(co[term == "factor(year_t)2021"])[, term := "factor(year_t)2022"])
-  p <- plot_onset_forest_all(co, "activity", cfg); built(p)                              # part 2 (default): everything except the years
+  p <- plot_onset_forest_all(co, "activity", cfg); built(p)
   d <- ggplot2::ggplot_build(p)$plot$data
-  expect_false(any(grepl("Intercept|splines|year_t", d$term)))                           # intercept, spline basis and years are not in this part
-  expect_true(all(c("w_act_steps", "b_act_steps", "age10", "cohortDiabetes", "dow_tTue", "any_prior_gap") %in% d$term))
+  expect_false(any(grepl("Intercept|splines|year_t", d$term)))                           # intercept and spline basis are not drawn; there are no calendar years
+  expect_true(all(c("w_act_steps", "b_act_steps", "age10", "cohortDiabetes", "dow_tTue", "any_prior_gap", "deviceVersa", "cci") %in% d$term))
   expect_equal(levels(d$label)[1L], "Days since return")                 # model order, top to bottom
   expect_equal(rev(levels(d$label))[1L:2L], c("Within: Steps", "Within: Sedentary minutes"))
   expect_s3_class(p$facet, "FacetNull")                                                  # no panel strips on the right
-  py <- plot_onset_forest_all(co, "activity", cfg, part = "year"); built(py)             # part 1: the calendar years only
-  dy <- ggplot2::ggplot_build(py)$plot$data
-  expect_equal(sort(dy$term), c("factor(year_t)2021", "factor(year_t)2022")); expect_equal(rev(levels(dy$label)), c("Year: 2021", "Year: 2022"))
-  expect_false(any(grepl("[()]", c(levels(d$label), levels(dy$label)))))                 # no bracketed text on the y axis
-  expect_equal(nrow(d) + nrow(dy), nrow(co[stream == "activity" & !term %in% c("(Intercept)", "splines::ns(study_day, 3)1")]))   # nothing lost, nothing twice
-  expect_null(plot_onset_forest_all(co[!grepl("year_t", term)], "activity", cfg, part = "year"))
+  expect_true(all(c("Device: Versa", "CCI score") %in% levels(d$label)))
+  expect_false(any(grepl("[()]", levels(d$label))))                                      # no bracketed text on the y axis
+  expect_equal(nrow(d), nrow(co[stream == "activity" & !term %in% c("(Intercept)", "splines::ns(study_day, 3)1")]))   # nothing lost
   expect_true("GeomPointrange" %in% geoms(p)); expect_true("GeomBoxplot" %in% geoms(plot_onset_forest_all(co, "activity", make_config(list(plot = list(interval_style = "box"))))))
   expect_null(plot_onset_forest_all(co, "hr", cfg))
   expect_equal(term_label("cohortDiabetes"), "Cohort: Diabetes"); expect_equal(term_label("w_act_mvpa"), "Within: MVPA minutes"); expect_equal(term_label("b_sleep_eff"), "Between: Sleep efficiency")
@@ -225,11 +221,11 @@ test_that("one direction everywhere: odds ratios are per +1 SD higher, no label 
 test_that("all-terms comparison forests: primary first (dark), every term but the intercept and the spline basis, calendar years apart", {
   cfg <- make_config(); geoms <- function(p) vapply(p$layers, function(l) class(l$geom)[1L], "")
   terms <- c("(Intercept)", "w_act_steps", "b_act_steps", "cohortDiabetes", "age10", "dow_tMon", "splines::ns(study_day, 3)1", "splines::ns(study_day, 3)2",
-             "factor(year_t)2021", "factor(year_t)2022", "prev_gap_len_l")
+             "deviceVersa", "cci", "prev_gap_len_l")
   mk <- function(a) data.table(stream = "activity", analysis = a, term = terms, or = 1.2, or_low = 1.0, or_high = 1.4, estimate = 0.2, conf_low = 0.1, conf_high = 0.3)
-  tab <- rbind(mk("main"), mk("trailing_baseline")[term == "w_act_steps", term := "tw_act_steps"], mk("conditional_logit")[!grepl("^b_|^cohort|^age", term)])
+  tab <- rbind(mk("main"), mk("trailing_baseline")[term == "w_act_steps", term := "tw_act_steps"], mk("conditional_logit")[!grepl("^b_|^cohort|^age|^device|^cci", term)])
   gl <- c(main = "Main", trailing_baseline = "Trailing baseline", conditional_logit = "Conditional logit")
-  p <- plot_effects_by_group(tab, "activity", cfg, "analysis", gl, "other", "t", SUBTITLE_OR)
+  p <- plot_effects_by_group(tab, "activity", cfg, "analysis", gl, "other", "t", subtitle_or(cfg))
   d <- ggplot2::ggplot_build(p)$plot$data
   expect_false(any(grepl("Intercept|splines|year_t", d$term_key)))
   expect_equal(levels(d$grp), unname(gl)); expect_equal(unname(unlist(lapply(ggplot2::ggplot_build(p)$data[1], function(x) 0))), 0)
@@ -238,8 +234,7 @@ test_that("all-terms comparison forests: primary first (dark), every term but th
   expect_equal(unname(p$guides$colour$params$reverse %||% TRUE), TRUE); expect_equal(length(attr(p, "size")), 2L)
   expect_true("GeomPointrange" %in% geoms(p))
   expect_equal(rev(levels(d$label))[1L], "Within: Steps")                                       # the model's own order, top to bottom
-  py <- plot_effects_by_group(tab, "activity", cfg, "analysis", gl, "year", "t")
-  expect_setequal(ggplot2::ggplot_build(py)$plot$data$term_key, c("factor(year_t)2021", "factor(year_t)2022"))
+  expect_true(all(c("deviceVersa", "cci") %in% d$term_key))
   expect_null(plot_effects_by_group(tab, "sleep", cfg, "analysis", gl, "other", "t"))
   pe <- plot_effects_by_group(tab[!grepl("^b_", term)], "activity", cfg, "analysis", gl, "other", "t", measure = "estimate")   # linear model: estimates, reference 0
   expect_equal(pe$layers[[1]]$data$xintercept %||% pe$layers[[1]]$aes_params$xintercept, 0)
@@ -282,13 +277,19 @@ test_that("collinearity, observed post-gap, wear-consistency and exploratory-gri
     , `:=`(k = 1L, role = ifelse(set_name == "joint" & adjusted, "primary", "exploratory"), or = 0.8, or_low = 0.7, or_high = 0.9)]
   p <- plot_exploratory_grid(co, "activity", cfg); expect_silent(suppressWarnings(ggplot2::ggplot_build(p)))
   expect_setequal(levels(p$data$spec), c("All predictors together", "Steps alone")); expect_null(plot_exploratory_grid(co[role == "primary"], "activity", cfg))
+
+  # intervals that cannot be estimated (0 / Inf after separation) are left out: no "infinite values" warning on the log axis
+  co2 <- copy(co); co2[1L, `:=`(or_low = 0, or_high = Inf)]
+  p2 <- plot_exploratory_grid(co2, "activity", cfg); expect_silent(ggplot2::ggplot_build(p2)); expect_equal(nrow(p2$data), nrow(co) - 1L)
+  cmp2 <- copy(cmp); cmp2[1L, `:=`(low_inconsistent = 0, high_inconsistent = Inf)]
+  p3 <- plot_wear_primary_effect(cmp2, cfg); expect_silent(ggplot2::ggplot_build(p3)); expect_equal(nrow(p3$data), 3L)                     # 2 odds-ratio models x 2 strata, one row dropped
 })
 
 test_that("every figure belongs to one analysis step of the workflow and has a caption; figure_index.tsv lists them", {
-  nm <- c("heatmap_sleep", "missing_pct_by_sex", "transition", "wear_consistency_distribution", "wear_consistency_composition", "onset_forest_year_activity",
+  nm <- c("heatmap_sleep", "missing_pct_by_sex", "transition", "wear_consistency_distribution", "wear_consistency_composition", "onset_forest_other_activity",
           "onset_deciles_hr", "risk_curve", "gap_dose_response", "gapC_forest_hr", "post_gap_activity_observed_sleep", "wear_strata_primary_effect",
           "wear_strata_onset_all_terms_other_activity", "wear_strata_gapB_all_terms_hr", "sensitivity_forest_hr", "sensitivity_all_terms_other_hr", "forest_sensitivity",
-          "gap_definition_all_terms_year_sleep", "exploratory_grid_effects_activity", "collinearity_gvif_hr")
+          "gap_definition_all_terms_other_sleep", "exploratory_grid_effects_activity", "collinearity_gvif_hr")
   steps <- vapply(nm, function(n) figure_analysis(n)$step, 1L)
   expect_false(anyNA(steps)); expect_false(anyNA(vapply(nm, caption_for, character(1))))
   expect_equal(unname(steps[c("heatmap_sleep", "transition", "wear_consistency_distribution", "risk_curve", "wear_strata_primary_effect", "sensitivity_forest_hr", "collinearity_gvif_hr")]), c(1L, 2L, 3L, 4L, 5L, 6L, 7L))

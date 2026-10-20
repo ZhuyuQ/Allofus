@@ -88,9 +88,9 @@ test_that("pipeline writes tables, figures and metadata; primary effect recovere
                                                           "metric_summary.tsv", "onset_coefficients.tsv", "primary_test.tsv")))))
   expect_true(file.exists(file.path(out, "figures", "missing_pct_by_cohort.png")))
   # one forest plot with all predictors, and one observed-rate (decile) figure, per stream - and the table behind the latter
-  expect_true(all(file.exists(file.path(out, "figures", paste0(rep(c("onset_forest_year_", "onset_forest_other_", "onset_deciles_"), each = 3L), c("activity", "sleep", "hr"), ".png")))))
+  expect_true(all(file.exists(file.path(out, "figures", paste0(rep(c("onset_forest_other_", "onset_deciles_"), each = 3L), c("activity", "sleep", "hr"), ".png")))))
   expect_true(file.exists(file.path(out, "tables", "onset_deciles.tsv"))); expect_setequal(res$onset_deciles$stream, c("activity", "sleep", "hr"))
-  expect_match(paste(readLines(file.path(out, "figures", "figure_captions.md")), collapse = " "), "part 2 of 2")
+  expect_match(paste(readLines(file.path(out, "figures", "figure_captions.md")), collapse = " "), "every predictor, in this order")
   expect_true(all(file.exists(file.path(out, c("run_config.json", "session_info.txt", "input_manifest.tsv")))))
   expect_equal(nrow(res$primary_test), 3L)
   expect_true(all(res$primary_test$or < 1 & res$primary_test$p_holm < 0.05))     # per +1 SD higher steps: fewer gaps
@@ -118,7 +118,7 @@ test_that("the onset stage resumes from checkpoints, runs one stream at a time a
   expect_true(file.exists(file.path(out, "results_summary.md"))); expect_true(file.exists(file.path(out, "figures", "figure_captions.md")))
 
   # settings that change the result -> the old checkpoints are not used, and are reported as stale
-  cfg_other <- cfg; cfg_other$onset$days_since_cap <- 30L
+  cfg_other <- cfg; cfg_other$model$adjust_cci <- !isTRUE(cfg$model$adjust_cci)
   dks <- list(activity = data_key(as_day_store(inp$day_tables, inp$persons), "activity"))
   expect_equal(nrow(collect_onset_results(ck, cfg_other, dks)$onset_models), 0L)
   expect_true(all(checkpoint_report(ck, cfg_other, dks)$state == "stale"))
@@ -247,7 +247,7 @@ test_that("wear consistency: the characterization alone fits no model; the strat
   tabs <- c("wear_strata_onset_coefficients", "wear_strata_onset_models", "wear_strata_interaction", "wear_strata_comparison", "wear_strata_quality",
             "wear_strata_onset_collinearity", "wear_strata_onset_term_tests", "model_collinearity", "model_term_tests")
   expect_true(all(file.exists(file.path(out, "tables", paste0(tabs, ".tsv")))))
-  figs <- c("wear_strata_primary_effect", "wear_strata_onset_all_terms_other_activity", "wear_strata_onset_all_terms_year_activity", "collinearity_gvif_activity")
+  figs <- c("wear_strata_primary_effect", "wear_strata_onset_all_terms_other_activity", "collinearity_gvif_activity")
   expect_true(all(file.exists(file.path(out, "figures", paste0(figs, ".png")))))
   ix <- fread(file.path(out, "figures", "figure_index.tsv"))
   expect_equal(ix[figure == "wear_strata_primary_effect.png", step], 5L); expect_equal(ix[figure == "collinearity_gvif_activity.png", step], 7L)

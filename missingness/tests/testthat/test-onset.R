@@ -61,6 +61,7 @@ test_that("sensitivity analyses are separate units, agree with the main estimate
   got <- collect_sensitivity_results(ck, s$cfg, list(activity = dk))
   sens <- got$sensitivity
   expect_true(all(c("main", "full_period_standardization", "trailing_baseline", "exclude_partial_wear", "first_gap_only",
+                    "cci_removed", "cci_as_groups", "cci_within_cohort",
                     "conditional_logit", "cluster_robust_logit", "spline_vs_linear", "random_slope") %in% sens$analysis))
   expect_true(nrow(got$sensitivity_collinearity) > 0L && all(c("analysis", "term", "vif_equiv", "flag") %in% names(got$sensitivity_collinearity)))
   est <- sens[analysis %in% c("main", "conditional_logit", "cluster_robust_logit", "trailing_baseline"), estimate]
@@ -72,7 +73,11 @@ test_that("sensitivity analyses are separate units, agree with the main estimate
   at <- got$sensitivity_all_terms                                                          # every within-person term of the estimators
   within <- c("w_act_steps", "w_act_sedentary", "w_act_mvpa")
   for (a in c("main", "exclude_partial_wear", "first_gap_only", "cluster_robust_logit"))
-    expect_true(all(c(within, "b_act_steps", "cohortInsomnia", "age10", "dow_tMon", "prev_gap_len_l") %in% at[analysis == a, term]) || a == "first_gap_only")   # ALL terms, not only the tested one
+    expect_true(all(c(within, "b_act_steps", "cohortInsomnia", "age10", "dow_tTue", "cci", "prev_gap_len_l") %in% at[analysis == a, term]) || a == "first_gap_only")   # ALL terms, not only the tested one (Monday is the reference weekday)
+  expect_false(any(grepl("^cci", at[analysis == "cci_removed", term])))                    # the CCI sensitivity analyses really change the model ...
+  expect_true(any(grepl("^cci_grp", at[analysis == "cci_as_groups", term])) && !"cci" %in% at[analysis == "cci_as_groups", term])
+  expect_true("cci" %in% at[analysis == "cci_within_cohort", term])
+  expect_false(any(grepl("year", at$term)))                                                # no calendar year in any model
   expect_true(all(within %in% at[analysis == "conditional_logit", term]))
   expect_false(any(grepl("strata|Intercept|splines", at$term)))                            # a real conditional logit (no person dummies); intercept and spline basis not reported
   expect_true(all(c("tw_act_steps", "tw_act_sedentary", "tw_act_mvpa", "b_act_steps") %in% at[analysis == "trailing_baseline", term]))
@@ -196,7 +201,7 @@ test_that("Healthy is the reference cohort in every model: it is the first level
   r <- fit_onset_spec(s$b, primary_spec(s$cfg), s$cfg)
   expect_setequal(grep("^cohort", r$coef$term, value = TRUE), c("cohortInsomnia", "cohortDiabetes", "cohortProstate"))
   g <- build_gap_level_data(s$inp$day_tables$activity, s$inp$day_tables$activity, s$inp$persons, s$cfg)
-  expect_equal(levels(g$cohort)[1L], "Healthy"); expect_equal(gap_adjusters(g), c("cohort", "age10", "sex2"))
+  expect_equal(levels(g$cohort)[1L], "Healthy"); expect_equal(gap_adjusters(g), c("cohort", "age10", "sex2", "cci"))      # cci_missing is constant here, device is switched off
   cfg2 <- s$cfg; cfg2$reference_cohort <- "Diabetes"
   expect_false(identical(ckpt_cfg_part(s$cfg, "onset"), ckpt_cfg_part(cfg2, "onset")))        # old checkpoints (other reference) are not reused
   expect_false(identical(ckpt_cfg_part(s$cfg, "gapB"), ckpt_cfg_part(cfg2, "gapB")))
@@ -204,25 +209,63 @@ test_that("Healthy is the reference cohort in every model: it is the first level
   expect_equal(fit_d$info$cohort_stratum, "Prostate")
 })
 
-test_that("calendar years: sparse years are pooled, the reference is the year with the most gap starts, and the fit does not depend on it", {
-  yr <- rep(c(2010L, 2011L, 2012L, 2013L, 2014L), times = c(40, 40, 400, 400, 100))
-  ev <- c(rep(0L, 40), c(1L, rep(0L, 39)), rep(c(1L, 0L), c(30, 370)), rep(c(1L, 0L), c(60, 340)), rep(c(1L, 0L), c(12, 88)))
-  m <- year_level_map(yr, ev, min_events = 10L)
-  expect_equal(m$map[["2010"]], "2010-2012")                         # 0 + 1 + 30 events: pooled up to the neighbour with more gap starts
-  expect_equal(m$reference, "2013")                                    # 60 events: the most informative year is the reference
-  expect_equal(m$levels[1L], "2013")
-  expect_setequal(m$levels, c("2013", "2010-2012", "2014"))
-  expect_equal(year_level_map(yr, ev, min_events = 0L)$levels[1L], "2013")      # nothing pooled when every year has enough
-  expect_equal(length(year_level_map(yr, ev, min_events = 0L)$levels), 5L)
-
-  s <- small_study(beta = -0.5)
-  spec <- primary_spec(s$cfg)
+test_that("covariates: no calendar year, age uncentred, Monday is the weekday reference, day counts on log2 and uncapped", {
+  s <- small_study(beta = -0.5); spec <- primary_spec(s$cfg)
   d <- build_onset_data(s$b, spec, s$cfg)
-  expect_true(is.factor(d$year_t))
+  expect_false("year_t" %in% names(d)); expect_false("year_t" %in% names(s$b$rs))
+  expect_equal(levels(d$dow_t), c("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"))
   r <- fit_onset_spec(s$b, spec, s$cfg)
-  yr_terms <- r$coef[grepl("^factor\\(year_t\\)", term)]
-  expect_true(all(is.finite(yr_terms$se) & yr_terms$se < 10))                              # no inestimable year terms
-  expect_false(any(grepl(paste0("^factor\\(year_t\\)", levels(d$year_t)[1L], "$"), r$coef$term)))   # the reference has no coefficient
+  expect_false(any(grepl("year", r$coef$term))); expect_true("cci" %in% r$coef$term); expect_false("dow_tMon" %in% r$coef$term)
+  expect_equal(person_covariates(s$inp$persons, s$cfg)$age10, s$inp$persons$age_first / 10)              # per 10 years, not centred
+  # a 298-day run since the last return is NOT capped (the old cap was 60 days); the log2 transform is applied to 1 + days
+  days <- data.table(person_id = 1L, date = as.Date("2022-01-01") + c(0:5, 10:309))
+  rs <- build_risk_set(days, s$cfg)
+  expect_equal(max(rs$days_since_return), 298L)
+  expect_equal(as.character(rs$dow_t[1L]), "Sun")                                                       # day d = Sat 2022-01-01 -> predicted day Sun 2022-01-02
+  pr <- data.table(person_id = 1L, cohort = factor("Healthy", levels = s$cfg$cohorts), sex = factor("Female", levels = c("Female", "Male", "Other")), age_first = 50, cci_score = 2, cci_group = factor("1-2"))
+  expect_equal(prev_log <- log2(1 + 3), 2)                                                                 # "per doubling of (1 + days)": 3 days -> 2
+})
+
+test_that("CCI: score with a missing flag, within-cohort and group versions; the checkpoint key knows the covariate set", {
+  s <- small_study(beta = -0.5); cfg <- s$cfg
+  pers <- copy(s$inp$persons); pers[c(1L, 2L, 3L), cci_score := NA_real_]
+  pc <- person_covariates(pers, cfg)
+  expect_equal(pc$cci_missing[1:3], c(1L, 1L, 1L)); expect_equal(pc$cci[1:3], rep(median(pers$cci_score, na.rm = TRUE), 3L)); expect_equal(sum(pc$cci_missing), 3L)
+  expect_true(all(abs(pc[cci_missing == 0L, .(m = mean(cci_wc)), by = cohort]$m) < 1e-8))                 # centred within each cohort
+  expect_equal(levels(pc$cci_grp)[1L], names(which.max(table(pers$cci_group))))                          # reference = the most common group
+  expect_true(tail(levels(pc$cci_grp), 1L) %in% c("Unknown", levels(pc$cci_grp)))
+  for (mode in c("none", "groups", "within_cohort")) {
+    r <- fit_onset_spec(s$b, primary_spec(cfg), cfg, variant = list(cci_mode = mode))
+    tm <- r$coef$term
+    if (mode == "none") expect_false(any(grepl("^cci", tm)))
+    if (mode == "groups") expect_true(any(grepl("^cci_grp", tm)) && !"cci" %in% tm)
+    if (mode == "within_cohort") expect_true("cci" %in% tm)
+  }
+  cfg2 <- cfg; cfg2$model$adjust_cci <- FALSE
+  expect_false(identical(ckpt_cfg_part(cfg, "onset"), ckpt_cfg_part(cfg2, "onset"))); expect_false(identical(ckpt_cfg_part(cfg, "gapB"), ckpt_cfg_part(cfg2, "gapB")))
+  expect_false(any(grepl("^cci", fit_onset_spec(suppressMessages(prepare_stream_bundle("activity", s$inp$day_tables, s$inp$persons, cfg2, trailing = TRUE)), primary_spec(cfg2), cfg2)$coef$term)))
+})
+
+test_that("device family covariate: small wrist families pooled, reference = the largest known family, Missing last; models use it and say so when it is absent", {
+  cfg <- cfg_test(); cfg$device$min_family_people <- 5L
+  x <- c(rep("Charge", 40), rep("Versa", 30), rep("Luxe", 3), rep("Sense", 8), rep("Clip-on or phone", 6), rep("Missing", 20), NA, NA)
+  f <- device_model_factor(x, cfg)
+  expect_equal(attr(f, "reference"), "Charge"); expect_equal(levels(f)[1L], "Charge"); expect_equal(tail(levels(f), 1L), "Missing")
+  expect_false("Luxe" %in% levels(f)); expect_equal(sum(f == "Other wrist-worn"), 3L); expect_equal(sum(f == "Missing"), 22L)       # Luxe pooled; NA counts as Missing
+  cfg$device$reference <- "Versa"; expect_equal(attr(device_model_factor(x, cfg), "reference"), "Versa")
+  cfg$device$reference <- NULL
+
+  cfgd <- cfg_test(model = list(adjust_device = TRUE))
+  s <- small_study(beta = -0.5)
+  expect_error(person_covariates(s$inp$persons, cfgd), "device information")
+  tabs <- build_device_tables(sim_device_rows(s$inp$persons, cfgd), s$inp$persons, cfgd)
+  pers <- merge(s$inp$persons, tabs$person[, .(person_id, device_family)], by = "person_id", all.x = TRUE)
+  b <- suppressMessages(prepare_stream_bundle("activity", s$inp$day_tables, pers, cfgd, trailing = TRUE))
+  r <- fit_onset_spec(b, primary_spec(cfgd), cfgd)
+  dev_terms <- grep("^device", r$coef$term, value = TRUE)
+  expect_gt(length(dev_terms), 1L); expect_false(any(grepl(paste0("^device", device_reference(pers, cfgd), "$"), dev_terms)))      # the reference has no coefficient
+  expect_true(all(is.finite(r$coef[term %in% dev_terms, se])))
+  expect_true("device" %in% r$gvif[, term])                                                                  # its multicollinearity is reported with the others
 })
 
 test_that("intervals that cannot be estimated are not drawn (no infinite values on the log axis)", {

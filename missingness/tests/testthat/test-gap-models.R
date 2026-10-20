@@ -49,7 +49,7 @@ test_that("NO LOOK-AHEAD in the gap table: days after the post-gap window never 
   days <- data.table(person_id = rep(1:20, each = 80), day = rep(1:80, 20))[!(day %in% 40:42)]       # every person: one gap of 3 days (days 40-42)
   days[, `:=`(date = as.Date("2024-01-01") + day - 1L, steps = round(runif(.N, 3000, 9000)), sedentary_minutes = 800, mvpa_minutes = 10)]
   setkey(days, person_id, date)
-  persons <- data.table(person_id = 1:20, cohort = rep(c("Healthy", "Diabetes"), 10), sex = rep(c("Female", "Male"), each = 10), age_first = 50)
+  persons <- data.table(person_id = 1:20, cohort = rep(c("Healthy", "Diabetes"), 10), sex = rep(c("Female", "Male"), each = 10), age_first = 50, cci_score = rep(0:3, 5))
   gaps_of <- function(d) build_gap_level_data(d, d, persons, cfg)[order(person_id)]
   cols <- c("w_pre_day_steps", paste0("post_k", 0:7))
   g1 <- gaps_of(days)
@@ -235,7 +235,7 @@ test_that("NO LOOK-AHEAD for MVPA: changing MVPA on or after the gap leaves the 
   days <- data.table(person_id = rep(1:20, each = 80), day = rep(1:80, 20))[!(day %in% 40:42)]
   days[, `:=`(date = as.Date("2024-01-01") + day - 1L, steps = round(runif(.N, 3000, 9000)), sedentary_minutes = 800, mvpa_minutes = round(runif(.N, 0, 60)))]
   setkey(days, person_id, date)
-  persons <- data.table(person_id = 1:20, cohort = rep(c("Healthy", "Diabetes"), 10), sex = rep(c("Female", "Male"), each = 10), age_first = 50)
+  persons <- data.table(person_id = 1:20, cohort = rep(c("Healthy", "Diabetes"), 10), sex = rep(c("Female", "Male"), each = 10), age_first = 50, cci_score = rep(0:3, 5))
   gaps_of <- function(d) build_gap_level_data(d, d, persons, cfg)[order(person_id)]
   g1 <- gaps_of(days)
   after <- copy(days); after[person_id == 7L & day >= 43L, mvpa_minutes := mvpa_minutes * 4]        # from the return day on

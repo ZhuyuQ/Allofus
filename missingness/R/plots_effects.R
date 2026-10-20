@@ -13,7 +13,7 @@ EFFECT_COLORS <- c("#2C3E50", "#E74C3C", "#3498DB", "#27AE60", "#F39C12", "#8E44
 # Label of a model TERM GROUP (a factor / spline / year term that needs several coefficients is one group).
 term_group_label <- function(term, df = 1L) {
   fixed <- c(cohort = "Cohort", age10 = "Age", sex2 = "Sex", dow_t = "Weekday", `splines::ns(study_day, 3)` = "Study time (spline)",
-             `factor(year_t)` = "Calendar year")
+             device = "Device family", cci = "CCI score", cci_missing = "CCI missing", cci_grp = "CCI group")
   lab <- ifelse(term %in% names(fixed), fixed[term], term_label(term))
   ifelse(df > 1L, paste0(lab, " [", df, " df]"), lab)
 }
@@ -21,20 +21,17 @@ term_group_label <- function(term, df = 1L) {
 # One forest of ALL terms of one stream's model, comparing the groups of `group_col` (analyses, gap definitions, strata ...).
 #   tab         one row per (group, term) with stream, term, group_col and the effect columns
 #   group_labels named character vector: value of group_col -> legend label; its ORDER sets the order, the first is the primary
-#   part        "other": every term except the calendar years (predictors first, then covariates and gap history)
-#               "year" : the calendar-year terms only
+#   part        "other" (the only one): predictors first, then covariates and gap history
 #   measure     "or": odds ratios (log axis, reference 1)   "estimate": estimates of a linear model (reference 0)
 # The spline terms of study time and the intercept are never drawn: their coefficients have no reading one by one (they are
 # tested jointly, see the term_tests tables).
-plot_effects_by_group <- function(tab, s, cfg, group_col, group_labels, part = c("other", "year"), title, subtitle = NULL,
+plot_effects_by_group <- function(tab, s, cfg, group_col, group_labels, part = "other", title, subtitle = NULL,
                                   measure = c("or", "estimate"), xlab = NULL) {
   part <- match.arg(part); measure <- match.arg(measure)
   cols <- if (measure == "or") c("or", "or_low", "or_high") else c("estimate", "conf_low", "conf_high")
   d <- copy(tab)[stream == s]
   d[, term_key := sub("^tw_", "w_", term)]
   d <- d[is_reportable_term(term_key) & !is.na(get(cols[1L])) & as.character(get(group_col)) %in% names(group_labels)]
-  is_year <- grepl("^factor\\(year_t\\)", d$term_key)
-  d <- if (part == "year") d[is_year] else d[!is_year]
   d <- d[drawable_interval(d, cols[1L], cols[2L], cols[3L], log = measure == "or")]
   if (nrow(d) == 0L) return(NULL)
   group_labels <- group_labels[names(group_labels) %in% as.character(d[[group_col]])]          # only the groups this model has (no empty legend entries)
@@ -59,8 +56,13 @@ plot_effects_by_group <- function(tab, s, cfg, group_col, group_labels, part = c
   p
 }
 
-SUBTITLE_OR <- paste0("Within and between: per +1 SD. Age: per 10 years. Cohorts are compared with Healthy; sex with Female; weekdays with Sunday;",
-                      "\nother terms per +1 unit. The first colour (dark) is the primary analysis.")
+# The reading of every covariate, for the subtitles of the odds-ratio figures (the device reference is the one used in the models).
+covariate_note <- function(cfg) {
+  ref <- cfg$device$reference_used %||% cfg$device$reference
+  paste0("Within and between: per +1 SD. Age: per 10 years. CCI: per +1 point. Previous gap length and days since return: per doubling of (1 + days). Cohorts against Healthy; sex against Female; weekdays against Monday",
+         if (isTRUE(cfg$model$adjust_device)) paste0("; device family against ", ref %||% "the largest family") else "", ".")
+}
+subtitle_or <- function(cfg) paste0(ov_wrap(covariate_note(cfg), 150), "\nThe first colour (dark) is the primary analysis.")
 
 # ---- multicollinearity ---------------------------------------------------------------------------------------------
 
@@ -173,6 +175,8 @@ plot_wear_primary_effect <- function(cmp, cfg) {
             hi = get(paste0("high_", tolower(lv))))]
   }))
   long[, stratum := factor(stratum, levels = WEAR_LEVELS)]
+  long <- long[drawable_interval(long, "est", "lo", "hi", log = TRUE)]            # an interval that cannot be estimated (separation) cannot be drawn on a log axis
+  if (nrow(long) == 0L) return(NULL)
   style <- cfg$plot$interval_style %||% "se"
   add_interval_columns(long, "est", "lo", "hi", log = TRUE, style = style)
   long[, panel := factor(paste0(model, ": ", stream))]
@@ -209,6 +213,7 @@ spec_set_label <- function(set_name) {
 # (alone / grouped / all together), unadjusted and adjusted. The adjustment covariates are in onset_coefficients.tsv.
 plot_exploratory_grid <- function(coefs, s, cfg) {
   d <- coefs[stream == s & k == cfg$onset$primary_k & role %in% c("primary", "exploratory") & grepl("^[wb]_", term) & !is.na(or)]
+  d <- d[drawable_interval(d, "or", "or_low", "or_high", log = TRUE)]              # intervals that cannot be estimated cannot be drawn on a log axis
   if (nrow(d) == 0L || !any(d$role == "exploratory")) return(NULL)
   d[, `:=`(spec = spec_set_label(set_name), adj = factor(ifelse(adjusted, "Adjusted", "Unadjusted"), levels = c("Unadjusted", "Adjusted")),
            panel = term_label(term))]
@@ -267,7 +272,7 @@ plot_gap_mvpa <- function(all_terms, s, cfg, model = c("B", "C")) {
 # ---- device version: missing share and composition by cohort, in ONE figure -----------------------------------------------
 
 # One horizontal 100% bar per cohort: the grey segment at the left is the share of people WITHOUT a watch version
-# (no device record, scale only, phone / clip-on only, ...), the coloured segments are the main watch family of the others. The row
+# (no device record, scale only, no version), the brown segment is people with only a clip-on or phone (activity data, no watch), the other colours are the main watch family. The row
 # labels carry n and the missing share; the subtitle carries the tests (device_tests.tsv); the Wilson intervals are in the tables.
 plot_device_composition <- function(ds, cfg) {
   comp <- ds$device_composition_by_cohort; mb <- ds$device_missing_by_cohort; tt <- ds$device_tests
@@ -300,38 +305,9 @@ plot_device_composition <- function(ds, cfg) {
     scale_fill_manual(values = pal, breaks = cats, drop = FALSE) +
     scale_x_continuous(limits = c(0, 100), breaks = seq(0, 100, 20), labels = function(x) paste0(x, "%"), expand = expansion(mult = c(0, 0.01))) +
     labs(title = "Watch Version: Missing and Composition by Cohort", subtitle = sub, x = "Share of people in the cohort", y = NULL, fill = "Main device",
-         caption = paste0("Grey = no watch version (no device record, scale only, phone or clip-on only, or no version). Colours = the watch version with most records per person, grouped into families.\n",
-                          "Labels below 4% are not printed; all values and their Wilson 95% intervals are in device_composition_by_cohort.tsv.")) +
+         caption = ov_wrap(paste0("Grey (Missing) = no device record, scale only (a scale records weight only) or no version. Brown = clip-on or phone only: activity data, no watch. Other colours = the watch version with most records per person, grouped into families. ",
+                                  "Labels below 4% are not printed; all values and their Wilson 95% intervals are in device_composition_by_cohort.tsv."), 150)) +
     guides(fill = guide_legend(nrow = 2)) +
-    forest_theme()
-}
-
-# The same cohort x watch-version table read the other way: one 100% bar per watch version (and per "Missing"), coloured by COHORT. The top
-# bar is the cohort mix of all people: if cohort and watch version were unrelated, every bar would look like it.
-plot_device_cohort_mix <- function(ds, cfg) {
-  mx <- ds$device_cohort_mix; tt <- ds$device_tests
-  if (is.null(mx) || nrow(mx) == 0L) return(NULL)
-  d <- copy(mx)
-  cats <- levels(d$category)
-  lab <- unique(d[, .(category, n_category)])[, lab := sprintf("%s\nn = %s", category, format(n_category, big.mark = ",", trim = TRUE))]
-  d[, category := factor(category, levels = rev(cats), labels = rev(lab$lab[match(cats, lab$category)]))]
-  d[, cohort := factor(cohort, levels = rev(cfg$cohorts))]
-  pal <- cfg$palette$cohort
-  dark <- vapply(pal, function(h) { rgb <- grDevices::col2rgb(h); sum(rgb * c(0.299, 0.587, 0.114)) < 140 }, logical(1))
-  d[, `:=`(lab_txt = ifelse(pct_of_category >= 4, sprintf("%.0f%%", pct_of_category), ""), txt_col = ifelse(dark[as.character(cohort)], "white", "black"))]
-  t2 <- tt[grepl("missing included", test)]
-  pf <- function(x) if (is.na(x)) "NA" else if (x < 0.001) "<0.001" else sprintf("%.3f", x)
-  sub <- paste0("Cohort and watch version are associated: Monte-Carlo p ", ifelse(t2$p_monte_carlo < 0.001, "<0.001", paste0("= ", pf(t2$p_monte_carlo))),
-                ", Cramer's V = ", sprintf("%.2f", t2$cramers_v), " (95% CI ", sprintf("%.2f", t2$v_low), "-", sprintf("%.2f", t2$v_high), ").\n",
-                ov_wrap("The top bar is the cohort mix of everybody; a bar that differs from it shows where a cohort is over- or under-represented (cell residuals: device_composition_residuals.tsv).", 130))
-  ggplot(d, aes(x = pct_of_category, y = category, fill = cohort, group = cohort)) +
-    geom_col(width = 0.72, color = "white", linewidth = 0.3) +
-    geom_text(aes(label = lab_txt, color = txt_col, group = cohort), position = position_stack(vjust = 0.5), size = 3, show.legend = FALSE) +
-    scale_color_identity() +
-    scale_fill_manual(values = pal, breaks = cfg$cohorts) +
-    scale_x_continuous(limits = c(0, 100), breaks = seq(0, 100, 20), labels = function(x) paste0(x, "%"), expand = expansion(mult = c(0, 0.01))) +
-    labs(title = "Cohort Mix of Each Watch Version", subtitle = sub, x = "Share of the people with this watch version", y = NULL, fill = "Cohort",
-         caption = "Each bar = 100% of the people with that watch version (Missing = no watch version). Labels below 4% are not printed; Wilson 95% intervals are in device_cohort_mix.tsv.") +
     forest_theme()
 }
 
@@ -340,85 +316,109 @@ plot_device_cohort_mix <- function(ds, cfg) {
 ov_wrap <- function(x, width) paste(strwrap(x, width), collapse = "\n")
 ov_fmt_p <- function(p) ifelse(is.na(p), "NA", ifelse(p < 0.001, "<0.001", sprintf("%.3f", p)))
 
-# Categorical variables (cohort, sex, watch version) in ONE figure: a column per variable, a row per stream; violin + box of the person-level
-# % of days missing by level, n per level under the violin, the overall test and its effect size in the corner of each panel.
-#   ovs: list (by stream) of outcome_variable_analysis() results
-plot_outcome_categorical <- function(ovs, cfg) {
-  min_n <- cfg$outcome_vars$min_n
-  rows <- rbindlist(lapply(names(ovs), function(s) {
-    d <- ovs[[s]]$data
-    rbindlist(lapply(intersect(names(OV_CATEGORICAL), names(d)), function(v)
-      d[!is.na(get(v)) & !is.na(pct_missing), .(stream = s, variable = v, level = as.character(get(v)), value = pct_missing)]))
-  }))
-  if (nrow(rows) == 0L) return(NULL)
-  rows[, n := .N, by = .(stream, variable, level)]
-  rows <- rows[n >= min_n]                                                       # levels with fewer people are not drawn (nor tested)
-  lv <- unique(c(cfg$cohorts, c("Female", "Male", "Other"), if ("watch" %in% names(ovs[[1L]]$data)) levels(ovs[[1L]]$data$watch)))
-  rows[, `:=`(level = factor(level, levels = lv), variable_f = factor(OV_CATEGORICAL[variable], levels = OV_CATEGORICAL), stream_f = factor(nice_label(stream), levels = nice_label(names(ovs))))]
-  pal <- c(cfg$palette$cohort, cfg$palette$sex, cfg$palette$device); pal <- pal[!duplicated(names(pal))]
-  cnt <- unique(rows[, .(stream_f, variable_f, level, n)])
-  tt <- rbindlist(lapply(ovs, `[[`, "tests"))[type == "categorical"]
-  tt[, `:=`(variable_f = factor(OV_CATEGORICAL[variable], levels = OV_CATEGORICAL), stream_f = factor(nice_label(stream), levels = nice_label(names(ovs))))]
-  tt[, label := paste0(ifelse(test == "Kruskal-Wallis", sprintf("Kruskal-Wallis H(%d) = %.1f", as.integer(df), statistic), "Wilcoxon rank-sum"),
-                       "\np(Holm) ", ov_fmt_p(p_holm), "\n", ifelse(effect_name == "epsilon-squared", "epsilon-sq = ", "Cliff's delta = "), sprintf("%.3f", effect),
-                       "\n(95% CI ", sprintf("%.3f", effect_low), " to ", sprintf("%.3f", effect_high), ")")]
-  dodge <- position_dodge(width = 0.9)
-  ggplot(rows, aes(x = level, y = value, fill = level)) +
-    geom_violin(color = NA, alpha = 0.8, scale = "width", width = 0.85) +
-    geom_boxplot(width = 0.12, outlier.size = 0.3, outlier.alpha = 0.5, color = "gray25", fill = "white", alpha = 0.7) +
-    geom_text(data = cnt, aes(x = level, y = -Inf, label = paste0("n = ", format(n, big.mark = ","))), inherit.aes = FALSE, vjust = -0.5, size = 2.6, color = "gray25") +
-    geom_text(data = tt, aes(x = -Inf, y = Inf, label = label), inherit.aes = FALSE, hjust = -0.03, vjust = 1.15, size = 2.7, fontface = "italic", lineheight = 0.95) +
-    facet_grid(stream_f ~ variable_f, scales = "free", space = "free_x") +
-    scale_fill_manual(values = pal, guide = "none") +
-    scale_y_continuous(expand = expansion(mult = c(0.07, 0.38))) +
-    labs(title = "Person-Level % of Days Missing by Model Variable (Categorical)", x = NULL, y = "% of days missing (one value per person)",
-         subtitle = ov_wrap("Violin = distribution, white box = median and quartiles. Corner: overall rank test across the levels (Holm-adjusted over all variables of the stream) and its effect size with a bootstrap 95% interval.", 150),
-         caption = ov_wrap(paste0("Levels with fewer than ", min_n, " people are not drawn or tested. Watch version: Missing = no watch version (see device_version_missing_and_composition). Post-hoc contrasts and adjusted odds ratios: outcome_variable_contrasts.tsv, outcome_variable_models.tsv."), 160)) +
-    theme_bw(base_size = 11) + theme(strip.text = element_text(face = "bold"), axis.text.x = element_text(angle = 35, hjust = 1), plot.subtitle = element_text(size = 8.5),
-                                      plot.caption = element_text(size = 8, hjust = 0), panel.grid.minor = element_blank())
+# ONE figure per model variable, the streams that have it side by side, ONE row:
+#   continuous variable  one line per cohort: mean % of days missing over 10 quantile bins of the variable (bins pooled over the cohorts), band = 95% interval of the mean;
+#   categorical variable one violin per cohort within each level (the distribution of the person-level % missing; white dot = median).
+# All statistics are written BELOW the figure (outside the panels): the overall test and effect size, the correlation within each cohort and the test of whether the
+# association differs between cohorts, per stream.
+#   ovs: list (by stream) of outcome_variable_analysis() results;  var: the variable name (e.g. "cohort", "age_first", "act_steps")
+plot_outcome_variable <- function(ovs, var, cfg) {
+  oc <- cfg$outcome_vars
+  streams <- names(ovs)[vapply(ovs, function(a) !is.null(a$tests) && var %in% a$tests$variable, logical(1))]
+  if (!length(streams)) return(NULL)
+  is_cat <- var %in% names(OV_CATEGORICAL)
+  cells <- rbindlist(lapply(streams, function(s) ovs[[s]]$cells[variable == var]))
+  cells <- cells[n >= oc$min_cell]
+  if (nrow(cells) == 0L) return(NULL)
+  tt <- rbindlist(lapply(streams, function(s) ovs[[s]]$tests[variable == var]), fill = TRUE)
+  bc <- rbindlist(lapply(streams, function(s) ovs[[s]]$by_cohort[variable == var]), fill = TRUE)
+  var_label <- tt$variable_label[1L]
+  sl <- stats::setNames(nice_label(streams), streams); lv_stream <- unname(sl[streams])
+  ord_cat <- unique(c(cfg$cohorts, c("Female", "Male", "Other"), cfg$strata$cci_labels, "Unknown", levels(ovs[[streams[1L]]]$data$watch)))
+  cells[, `:=`(xid = paste(stream, key, sep = "|"), cohort = factor(cohort, levels = cfg$cohorts))]
+  cells[, ord := if (is_cat) match(x_label, ord_cat) else as.integer(key)]
+  setorder(cells, stream, ord)
+  xlev <- unique(cells$xid); xlab <- stats::setNames(cells$x_label[match(xlev, cells$xid)], xlev)
+  cells[, `:=`(xid = factor(xid, levels = xlev), stream_f = factor(sl[stream], levels = lv_stream))]
+
+  # ---- the statistics, written below the figure ----
+  stat_lines <- vapply(streams, function(s) {
+    t1 <- tt[stream == s]; r <- bc[stream == s]
+    first <- if (is_cat) paste0(ifelse(t1$test == "Kruskal-Wallis", sprintf("Kruskal-Wallis H(%d) = %.1f", as.integer(t1$df), t1$statistic), "Wilcoxon rank-sum"), ", p(Holm) ", ov_fmt_p(t1$p_holm), "; ",
+                                ifelse(t1$effect_name == "epsilon-squared", "epsilon-squared = ", "Cliff's delta = "), sprintf("%.3f (95%% CI %.3f to %.3f)", t1$effect, t1$effect_low, t1$effect_high))
+             else paste0("Spearman rho = ", sprintf("%.3f (95%% CI %.3f to %.3f)", t1$effect, t1$effect_low, t1$effect_high), ", p(Holm) ", ov_fmt_p(t1$p_holm))
+    byc <- if (!is_cat && nrow(r)) paste0("; rho within cohort: ", paste0(r$cohort, " ", sprintf("%.2f", r$rho), collapse = ", ")) else ""
+    dif <- if ("p_cohort_difference" %in% names(t1) && !is.na(t1$p_cohort_difference)) paste0("; cohorts differ (", ifelse(is_cat, "pattern across levels", "slope"), "): p(Holm) ", ov_fmt_p(t1$p_cohort_difference_holm)) else ""
+    paste(strwrap(paste0(sl[[s]], ": ", first, byc, dif), 150, exdent = 4), collapse = "\n")
+  }, character(1))
+  note <- ov_wrap(paste0(if (is_cat) "Violin = distribution of the person-level % of days missing, white dot = median; cohorts side by side within each level. "
+                         else "Lines = mean % missing per cohort within 10 bins of the variable (bins from everybody pooled), band = 95% interval of the mean. ",
+                         "Tests: overall rank test (Holm over the variables of the stream); the cohort-difference test is the ", if (is_cat) "level x cohort" else "variable x cohort",
+                         " F test of the quasi-binomial model (Holm). Cells with fewer than ", oc$min_cell, " people are not drawn. Details: outcome_variable_tests / _by_cohort / _contrasts / _models / _cells (.tsv)."), 150)
+  cap <- paste0("Statistics\n", paste(stat_lines, collapse = "\n"), "\n\n", note)
+  n_lines <- length(strsplit(cap, "\n", fixed = TRUE)[[1L]])
+
+  dodge <- position_dodge(width = 0.85)
+  p <- ggplot() +
+    facet_grid(. ~ stream_f, scales = "free_x") +
+    scale_x_discrete(labels = xlab) +
+    scale_color_manual(values = cfg$palette$cohort, breaks = cfg$cohorts) + scale_fill_manual(values = cfg$palette$cohort, breaks = cfg$cohorts) +
+    labs(title = paste0("% of Days Missing by ", var_label), x = var_label, y = "% of days missing (one value per person)", color = "Cohort", fill = "Cohort", caption = cap) +
+    theme_bw(base_size = 11) + theme(strip.text = element_text(face = "bold"), legend.position = "bottom", panel.grid.minor = element_blank(),
+                                      axis.text.x = element_text(angle = if (is_cat) 35 else 45, hjust = 1, size = 8),
+                                      plot.caption = element_text(size = 8.5, hjust = 0, lineheight = 1.05, margin = margin(t = 10)))
+  if (is_cat) {
+    pr <- rbindlist(lapply(streams, function(s) {
+      d <- ovs[[s]]$data[!is.na(get(var)) & !is.na(pct_missing), .(stream = s, key = as.character(get(var)), cohort = factor(as.character(cohort), levels = cfg$cohorts), y = pct_missing)]
+      d[, xid := paste(stream, key, sep = "|")]
+      d[paste(xid, cohort) %in% paste(cells$xid, cells$cohort)]
+    }))
+    pr[, `:=`(xid = factor(xid, levels = xlev), stream_f = factor(sl[stream], levels = lv_stream))]
+    p <- p + geom_violin(data = pr, aes(x = xid, y = y, fill = cohort), position = dodge, scale = "width", width = 0.8, color = NA, alpha = 0.85) +
+      stat_summary(data = pr, aes(x = xid, y = y, group = cohort), fun = stats::median, geom = "point", position = dodge, shape = 21, fill = "white", color = "gray25", size = 1.3)
+  } else {
+    p <- p + geom_ribbon(data = cells, aes(x = xid, ymin = low, ymax = high, fill = cohort, group = cohort), alpha = 0.18) +
+      geom_line(data = cells, aes(x = xid, y = mean_pct, color = cohort, group = cohort), linewidth = 0.8) +
+      geom_point(data = cells, aes(x = xid, y = mean_pct, color = cohort), size = 1.5)
+  }
+  attr(p, "size") <- c(max(7, 3.4 * length(streams) + 2.4), 5.4 + 0.2 * n_lines)
+  p
 }
 
-# Continuous variables of ONE stream: age and the between-person level of every model predictor. Light points = people (coloured by
-# cohort, a seeded sample), black = mean % missing in quantile bins with the 95% interval of the mean; the corner gives the Spearman
-# correlation (Bonett-Wright interval, Holm over the variables of the stream) and the adjusted odds ratio per +1 SD.
-plot_outcome_continuous <- function(a, stream, cont_spec, cfg) {
-  d <- a$data; bins <- a$bins
-  if (is.null(bins) || nrow(bins) == 0L) return(NULL)
-  cv <- c(list(age_first = list(label = "Age at first record (years)", display = "age_first", log_x = FALSE)), cont_spec)
-  cv <- cv[names(cv) %in% unique(bins$variable)]
-  lab_levels <- vapply(cv, `[[`, "", "label")
-  set.seed(cfg$seed)
-  ids <- sample_person_ids(d$person_id, cfg$outcome_vars$points_max, cfg$seed)
-  ymax <- stats::quantile(d$pct_missing, 0.99, na.rm = TRUE)
-  pts <- rbindlist(lapply(names(cv), function(v) {
-    x <- d[person_id %in% ids & !is.na(get(cv[[v]]$display)), .(x = get(cv[[v]]$display), y = pct_missing, cohort)]
-    q <- stats::quantile(x$x, c(0.005, 0.995), na.rm = TRUE)
-    x[x >= q[1L] & x <= q[2L] & y <= ymax][, variable_f := cv[[v]]$label]
-  }))
-  pts[, `:=`(variable_f = factor(variable_f, levels = lab_levels), cohort = factor(cohort, levels = cfg$cohorts))]
-  bb <- copy(bins)[, variable_f := factor(variable_label, levels = lab_levels)]
-  tt <- a$tests[type == "continuous"]; md <- a$models[adjustment != "unadjusted" & term == "per +1 SD"]
-  tt <- merge(tt, md[, .(variable, or = odds_ratio, or_low, or_high)], by = "variable", all.x = TRUE)
-  tt[, variable_f := factor(variable_label, levels = lab_levels)]
-  tt[, label := paste0("Spearman rho = ", sprintf("%.3f", effect), " (", sprintf("%.3f", effect_low), " to ", sprintf("%.3f", effect_high), "), p(Holm) ", ov_fmt_p(p_holm),
-                       ifelse(is.na(or), "", paste0("\nadjusted OR per +1 SD = ", sprintf("%.2f", or), " (", sprintf("%.2f", or_low), "-", sprintf("%.2f", or_high), ")")))]
-  ncol <- min(3L, length(cv)); nr <- ceiling(length(cv) / ncol)
-  p <- ggplot() +
-    geom_point(data = pts, aes(x = x, y = y, color = cohort), alpha = 0.18, size = 0.7) +
-    geom_line(data = bb, aes(x = x_display, y = mean_pct), color = "black", linewidth = 0.5) +
-    geom_pointrange(data = bb, aes(x = x_display, y = mean_pct, ymin = low, ymax = high), color = "black", size = 0.35) +
-    geom_text(data = tt, aes(x = -Inf, y = Inf, label = label), hjust = -0.03, vjust = 1.2, size = 2.7, fontface = "italic", lineheight = 0.95) +
-    facet_wrap(~variable_f, scales = "free_x", ncol = ncol) +
-    scale_color_manual(values = cfg$palette$cohort, drop = FALSE) +
-    scale_y_continuous(expand = expansion(mult = c(0.02, 0.18))) +
-    coord_cartesian(ylim = c(0, ymax * 1.18)) +
-    labs(title = paste0("Person-Level % of Days Missing by Model Variable (Continuous): ", nice_label(stream), " Stream"),
-         subtitle = ov_wrap("Black: mean % missing within quantile bins of the variable with its 95% interval. Points: people (seeded sample), coloured by cohort. Corner: rank correlation across all people and the odds ratio of a day being missing per +1 SD of the variable, adjusted for cohort, sex and age (quasi-binomial model); Holm adjustment over the variables of the stream.", 150),
-         x = NULL, y = "% of days missing (one value per person)", color = "Cohort",
-         caption = ov_wrap("Between-person level = the person's mean over observed days (geometric mean for log-transformed predictors). Points outside the 0.5-99.5% range of x or above the 99th percentile of y are not drawn; bins and tests use everybody.", 160)) +
-    guides(color = guide_legend(override.aes = list(alpha = 1, size = 2))) +
-    theme_bw(base_size = 11) + theme(strip.text = element_text(face = "bold"), legend.position = "bottom", plot.subtitle = element_text(size = 8.5),
-                                      plot.caption = element_text(size = 8, hjust = 0), panel.grid.minor = element_blank())
-  attr(p, "size") <- c(13, 3.6 * nr + 2.2)
+# The device VERSIONS within each cohort (people with a device): one row per version, grouped smartwatch / band / other / clip-on or phone, one BAR per
+# cohort = % of the cohort's people with a device whose main device is that version (no intervals; they are in device_version_by_cohort.tsv). A * after the
+# version means the share differs between the cohorts (Monte-Carlo chi-square of the cohort x "has this version" table, Holm over the versions); the subtitle
+# has the overall test.
+plot_device_versions <- function(ds, cfg) {
+  ver <- ds$device_version_by_cohort; vt <- ds$device_version_tests; tt <- ds$device_tests
+  if (is.null(ver) || nrow(ver) == 0L) return(NULL)
+  grp_lv <- c("Smartwatch", "Band", "Other", cfg$device$nonwrist_label)
+  vt <- copy(vt)[, `:=`(rare = grepl("^Other .* versions$", device_version))]
+  vt[, `:=`(group = factor(group, levels = grp_lv))]
+  vt <- vt[order(group, rare, -n_people)]
+  vt[, lab := sprintf("%s  (n = %s)%s", device_version, format(n_people, big.mark = ",", trim = TRUE), ifelse(!is.na(p_holm) & p_holm < 0.05, "  *", ""))]
+  d <- merge(copy(ver)[, device_version := as.character(device_version)], vt[, .(device_version, lab, group)], by = "device_version", suffixes = c("_old", ""))
+  d[, `:=`(lab = factor(lab, levels = rev(vt$lab)), group = factor(group, levels = grp_lv), cohort = factor(as.character(cohort), levels = rev(cfg$cohorts)))]
+  d[, txt := ifelse(pct_of_known >= 1, sprintf("%.1f%%", pct_of_known), "")]
+  nk <- unique(d[, .(cohort, n_known)])
+  clab <- stats::setNames(sprintf("%s (n = %s)", nk$cohort, format(nk$n_known, big.mark = ",", trim = TRUE)), as.character(nk$cohort))
+  t4 <- tt[grepl("VERSION", test)]
+  sub <- paste0("Share of each cohort's people with a device whose main device is this version (n = people with a device; each cohort's bars add up to 100%).\n",
+                "Versions differ between cohorts overall: Monte-Carlo p ", ifelse(t4$p_monte_carlo < 0.001, "<0.001", sprintf("= %.3f", t4$p_monte_carlo)),
+                ", Cramer's V = ", sprintf("%.2f", t4$cramers_v), " (95% CI ", sprintf("%.2f", t4$v_low), "-", sprintf("%.2f", t4$v_high), "). * = this version's share differs between cohorts, p(Holm) < 0.05.")
+  dodge <- position_dodge(width = 0.82)
+  p <- ggplot(d, aes(x = pct_of_known, y = lab, fill = cohort)) +
+    geom_col(position = dodge, width = 0.78) +
+    geom_text(aes(label = txt), position = dodge, hjust = -0.15, size = 2.3, color = "gray25") +
+    facet_grid(group ~ ., scales = "free_y", space = "free_y") +
+    scale_fill_manual(values = cfg$palette$cohort, breaks = cfg$cohorts, labels = clab[cfg$cohorts]) +
+    scale_x_continuous(labels = function(x) paste0(x, "%"), expand = expansion(mult = c(0, 0.12))) +
+    labs(title = "Device Versions Within Each Cohort", subtitle = ov_wrap(sub, 115), x = "% of the cohort's people with a device", y = NULL, fill = "Cohort",
+         caption = ov_wrap(paste0("Each person counts once, under the version with most records (wrist-worn devices first). Versions used by fewer than ", cfg$device$min_version_people,
+                                  " people are pooled as 'Other ... versions'. Labels below 1% are not printed. Counts, Wilson intervals and the per-version tests: device_version_by_cohort.tsv, device_version_tests.tsv."), 125)) +
+    guides(fill = guide_legend(nrow = 1)) +
+    forest_theme() + theme(plot.subtitle = element_text(size = 8.5), plot.caption = element_text(size = 8, hjust = 0), strip.text.y = element_text(angle = 0, face = "bold"),
+                           panel.grid.major.y = element_blank())
+  attr(p, "size") <- c(11, max(5, 2.2 + 0.62 * nrow(vt)))
   p
 }

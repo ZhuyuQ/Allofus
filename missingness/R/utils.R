@@ -264,11 +264,11 @@ ckpt_cfg_part <- function(cfg, kind) {
   core <- cfg[c("predictors", "own_predictors", "activity_predictors", "seed", "cohorts", "reference_cohort", "overlap",
                 "standardization")]
   core$or_direction <- "per +1 SD higher"       # odds ratios are expressed per +1 SD HIGHER; results saved with another convention are never reused
-  # bumped whenever the content of the stored results changes (3: pre-gap standardization, GVIF / Wald tables, all terms of the sensitivity fits)
-  core$analysis_version <- 3L
-  # 4 (onset models only): calendar years pooled when sparse and the reference year is the one with the most gap starts, not the first; gap models B / C are unaffected and keep 3
-  if (!kind %in% c("gapB", "gapC", "wear_gapB", "wear_gapC")) core$analysis_version <- 4L
-  model_part <- cfg$model[c("engine", "nAGQ", "min_events", "min_persons_with_events", "year_min_events")]
+  # bumped whenever the content of the stored results changes (3: pre-gap standardization, GVIF / Wald tables, all terms of the sensitivity fits;
+  # 5: calendar year replaced by device family, CCI added, age uncentred, Monday reference, log2 uncapped day counts)
+  core$covariates <- c(cfg$model[c("adjust_cci", "adjust_device")], list(device = cfg$device[c("forms", "wrist_forms", "families", "other_label", "nonwrist_label", "scale_types", "scale_versions", "min_family_people", "reference")], covariates_version = 1L))   # the covariate set is part of every key
+  core$analysis_version <- 5L
+  model_part <- cfg$model[c("engine", "nAGQ", "min_events", "min_persons_with_events", "adjust_cci", "adjust_device")]
   if (kind %in% c("gapB", "gapC", "wear_gapB", "wear_gapC"))
     return(c(core, list(gap_models = cfg$gap_models, boot = cfg$boot, predict = cfg$predict, kind = kind,
                         wear = if (startsWith(kind, "wear")) cfg$wear[c("method", "threshold")])))

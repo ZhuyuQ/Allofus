@@ -52,12 +52,14 @@ make_onset_grid <- function(cfg) {
 
 # Adjustment terms: formula term -> data column it depends on (so constant columns
 # can be dropped automatically, e.g. `sex2` inside the all-male Prostate cohort).
+# Calendar year is NOT a covariate. Device family (replaces it), CCI score and its missing flag are; a term whose column is not in the
+# data (switched off in cfg$model, or removed by a sensitivity variant) is dropped like a constant one.
 adjuster_terms <- function() {
   data.table(
-    term = c("cohort", "age10", "sex2", "dow_t", "splines::ns(study_day, 3)",
-             "factor(year_t)", "prev_gap_len_l", "any_prior_gap", "days_since_return_l"),
-    col  = c("cohort", "age10", "sex2", "dow_t", "study_day",
-             "year_t", "prev_gap_len_l", "any_prior_gap", "days_since_return_l"))
+    term = c("cohort", "age10", "sex2", "dow_t", "splines::ns(study_day, 3)", "device", "cci", "cci_missing",
+             "prev_gap_len_l", "any_prior_gap", "days_since_return_l"),
+    col  = c("cohort", "age10", "sex2", "dow_t", "study_day", "device", "cci", "cci_missing",
+             "prev_gap_len_l", "any_prior_gap", "days_since_return_l"))
 }
 
 # Build the model formula text.
@@ -116,14 +118,13 @@ build_onset_data <- function(bundle, spec, cfg, variant = list()) {
   }
 
   # only the columns this model uses (the bundle has ~30; copying all of them dominated memory)
-  adj_cols <- c("cohort", "age10", "sex2", "dow_t", "study_day", "year_t",
-                "prev_gap_len", "any_prior_gap", "days_since_return")
+  # CCI variant (sensitivity): "score" (default, per +1 point + missing flag), "none", "groups" (cci_grp), "within_cohort" (score minus the cohort mean)
+  cci_mode <- variant$cci_mode %||% "score"
+  adj_cols <- c("cohort", "age10", "sex2", "dow_t", "study_day", "device", "prev_gap_len", "any_prior_gap", "days_since_return",
+                switch(cci_mode, score = c("cci", "cci_missing"), none = character(), groups = "cci_grp", within_cohort = c("cci_wc", "cci_missing")))
+  adj_cols <- intersect(adj_cols, names(rs))                               # device / cci columns exist only when cfg$model switches them on
   out_cols <- unique(c("person_id", ycol, paste0(pre, preds), paste0("b_", preds),
                        if (spec$adjusted) adj_cols))
-  if (spec$adjusted) {                                                     # calendar-year levels from the whole risk set (see year_level_map)
-    ev_col <- if ("y_ge1" %in% names(rs)) "y_ge1" else ycol
-    ym <- year_level_map(rs$year_t, rs[[ev_col]], cfg$model$year_min_events %||% 10L)
-  }
   out <- rs[keep, ..out_cols]
   if (!is.null(variant$strata)) {
     lv <- levels(factor(variant$strata$stratum))
@@ -135,39 +136,13 @@ build_onset_data <- function(bundle, spec, cfg, variant = list()) {
     out <- out[person_id %in% ids]
   }
   if (spec$adjusted) {
-    out[, year_t := factor(ym$map[as.character(year_t)], levels = ym$levels)]
-    out[, `:=`(prev_gap_len_l = log1p(prev_gap_len), days_since_return_l = log1p(days_since_return))]
+    # day counts on the log2 scale, uncapped: a coefficient is "per doubling" of (1 + days)
+    out[, `:=`(prev_gap_len_l = log2(1 + prev_gap_len), days_since_return_l = log2(1 + days_since_return))]
     out[, c("prev_gap_len", "days_since_return") := NULL]
+    if (cci_mode == "within_cohort") { out[, cci := cci_wc]; out[, cci_wc := NULL] }
   }
   attr(out, "ycol") <- ycol
   out[]
-}
-
-# Calendar year as a factor, built ONCE per stream from the whole risk set (never from the subset of one analysis), so that the primary
-# model, models D, the sensitivity fits and every cohort / wear stratum use the same levels and the same reference and their year
-# terms are comparable.
-#   pooling    years with fewer than `min_events` gap starts (outcome y_ge1) are merged with the neighbouring calendar year that has
-#              more of them, until every level has enough events: a level without events has no finite estimate (separation), and its
-#              coefficient and standard error are meaningless. A pooled level is labelled "2010-2012".
-#   reference  the level with the MOST gap starts. A contrast against the reference has variance var(level) + var(reference), so the
-#              most informative level gives every contrast its smallest possible standard error; a sparse reference (e.g. the first year)
-#              makes the intercept and ALL year terms inestimable. The fit is the same whichever level is the reference.
-# Returns list(levels = labels, reference = label, map = year -> label).
-year_level_map <- function(year, events, min_events = 10L) {
-  yrs <- sort(unique(year[!is.na(year)]))
-  ev  <- vapply(yrs, function(y) sum(events[year == y], na.rm = TRUE), numeric(1))
-  grp <- as.list(seq_along(yrs)); gev <- ev
-  while (length(grp) > 1L && min(gev) < min_events) {
-    i <- which.min(gev)
-    nb <- c(if (i > 1L) i - 1L, if (i < length(grp)) i + 1L)
-    j <- nb[which.max(gev[nb] + 1e-9 * (nb > i))]                  # neighbour with more events (ties: the later year)
-    grp[[j]] <- sort(c(grp[[j]], grp[[i]])); gev[j] <- gev[j] + gev[i]
-    grp[[i]] <- NULL; gev <- gev[-i]
-  }
-  lab <- vapply(grp, function(ix) if (length(ix) == 1L) as.character(yrs[ix]) else paste0(yrs[min(ix)], "-", yrs[max(ix)]), character(1))
-  ref <- lab[which.max(gev)]
-  list(levels = c(ref, setdiff(lab, ref)), reference = ref,
-       map = stats::setNames(rep(lab, lengths(grp)), as.character(yrs[unlist(grp)])))
 }
 
 # Are there enough events to fit? (reported, not an error)
@@ -183,8 +158,10 @@ enough_events <- function(ec, cfg) {
 # Columns of the adjusters that are constant in `dat` (to be dropped from the formula).
 constant_adjuster_cols <- function(dat, adjusted) {
   if (!adjusted) return(character())
-  cols <- intersect(adjuster_terms()$col, names(dat))
-  cols[vapply(cols, function(cl) uniqueN(dat[[cl]]) < 2L, logical(1))]
+  cols <- adjuster_terms()$col
+  absent <- cols[!cols %in% names(dat)]                       # switched off or removed by a sensitivity variant
+  present <- intersect(cols, names(dat))
+  c(absent, present[vapply(present, function(cl) uniqueN(dat[[cl]]) < 2L, logical(1))])
 }
 
 # ---- fitting ----------------------------------------------------------------------------
@@ -274,7 +251,8 @@ fit_onset_spec_inner <- function(bundle, spec, cfg, variant = list(), keep_fit =
   }
   drop_cols <- constant_adjuster_cols(dat, spec$adjusted)
   ftxt <- build_onset_formula(spec$predictors[[1L]], spec$adjusted, spec$k,
-                              baseline = variant$baseline %||% "whole", drop_cols = drop_cols)
+                              baseline = variant$baseline %||% "whole", drop_cols = drop_cols,
+                              extra_terms = if (spec$adjusted && identical(variant$cci_mode, "groups") && "cci_grp" %in% names(dat) && uniqueN(dat$cci_grp) > 1L) "cci_grp" else character())
 
   notes <- character()
   fit <- tryCatch(
@@ -327,7 +305,9 @@ effective_sample <- function(cfg, role) {
 check_fit_memory <- function(bundle, spec, cfg, variant = list(), extra_cols = 0, safety = 1) {
   if (!isTRUE(cfg$resources$memory_guard)) return(invisible(TRUE))
   n_pred <- length(spec$predictors[[1L]])
-  n_cols <- 2 * n_pred + (if (isTRUE(spec$adjusted)) 36 else 0) + 3 + extra_cols
+  # adjusters: cohort 3, age 1, sex 1, weekday 6, study-time spline 3, gap history 3, device family (levels - 1), CCI 2 (an upper bound)
+  n_adj <- 17 + (if ("device" %in% names(bundle$rs)) max(0L, nlevels(bundle$rs$device) - 1L) else 0L) + (if ("cci" %in% names(bundle$rs)) 2L else 0L)
+  n_cols <- 2 * n_pred + (if (isTRUE(spec$adjusted)) n_adj else 0) + 3 + extra_cols
   n_rows <- if (!is.null(variant$cohort)) sum(bundle$rs$cohort == variant$cohort, na.rm = TRUE)
             else if (!is.null(variant$strata)) {
               st <- variant$strata$stratum[match(bundle$rs$person_id, variant$strata$person_id)]

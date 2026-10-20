@@ -99,14 +99,13 @@ build_gap_level_data <- function(days, act_days, persons, cfg, pred = "act_steps
               length_bin = collapse_sparse_bins(gap_length_bin(gap_length, cfg), cfg$gap_models$min_bin_n))]
   gaps[, c("gap_index", "prev_obs_date", "gap_start", "gap_end", "next_obs_date") := NULL]
 
-  cov <- persons[, .(person_id, cohort = cohort_factor(cohort, cfg), sex2 = factor(as.character(sex), levels = c("Female", "Male")),
-                     age10 = (age_first - 60) / 10)]
+  cov <- person_covariates(persons, cfg)                 # cohort, age10, sex2, CCI and device family (covariates.R)
   merge(gaps, cov, by = "person_id", all.x = TRUE, sort = FALSE)[]
 }
 
 # Covariate text for the adjusted gap-level models; constant ones are dropped.
 gap_adjusters <- function(gdat) {
-  cand <- c("cohort", "age10", "sex2")
+  cand <- intersect(c("cohort", "age10", "sex2", "device", "cci", "cci_missing"), names(gdat))     # device / CCI only when cfg$model switches them on
   cand[vapply(cand, function(cl) uniqueN(gdat[[cl]][!is.na(gdat[[cl]])]) > 1L, logical(1))]
 }
 

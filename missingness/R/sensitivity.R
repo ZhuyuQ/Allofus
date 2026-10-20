@@ -11,6 +11,9 @@
 #   trailing_baseline     "usual" = mean of the previous 14 observed days (no look-ahead)
 #   exclude_partial_wear  drop prior days that look like partial wear (device on/off)
 #   first_gap_only        only days up to each person's first gap (no gap history at all)
+#   cci_removed / cci_as_groups / cci_within_cohort
+#                         the CCI score (strongly tied to the cohorts) left out / entered as groups (reference = the most common group) /
+#                         entered as the score minus the cohort mean (the part that is not cohort membership)
 #   main_sleep_only       sleep only: a night counts as observed only if main sleep exists
 #   conditional_logit     within-person comparison, no random-effect assumption
 #   cluster_robust_logit  pooled logistic model, person-clustered standard errors
@@ -172,6 +175,13 @@ run_sensitivity_stage <- function(s, bundle, alt, prim, cfg, ckpt_dir, dkey, ter
   refit("trailing_baseline", list(baseline = "trailing"), tw_term)
   refit("exclude_partial_wear", list(drop_partial = TRUE))
   refit("first_gap_only", list(first_gap = TRUE))
+  # CCI is strongly tied to the cohorts (the score counts diabetes and cancer): the primary model uses the score; these three refits show whether the
+  # within-person estimates depend on how (or whether) it is adjusted for
+  if (isTRUE(cfg$model$adjust_cci)) {
+    refit("cci_removed", list(cci_mode = "none"))
+    refit("cci_as_groups", list(cci_mode = "groups"))
+    refit("cci_within_cohort", list(cci_mode = "within_cohort"))
+  }
   if (s == "sleep" && !is.null(alt)) refit("main_sleep_only", list(), term, alt)
 
   # estimators that reuse the model data: each builds it inside its own worker and frees it again

@@ -95,14 +95,13 @@ summarise_person_gaps <- function(days, gaps) {
 #   y_ge<k>         1 if a gap of at least k days starts on d+1   (k in cfg$onset)
 #   prev_gap_len    length of the most recent gap that ended on or before d (0 if none)
 #   any_prior_gap   TRUE if the person has had a gap before d
-#   days_since_return  days since the person came back from that gap (capped; 0 if none)
+#   days_since_return  days since the person came back from that gap (not capped; 0 if none)
 #   study_day       days since the person's first record, at d (1 = first record)
-#   dow_t, year_t   weekday (Sun..Sat) and calendar year of the predicted day
+#   dow_t           weekday of the predicted day (Mon..Sun, Monday = reference level)
 #
 # History columns use only information known at day d (model A).
 build_risk_set <- function(days, cfg) {
   ks  <- sort(unique(c(cfg$onset$primary_k, cfg$onset$secondary_k)))
-  cap <- cfg$onset$days_since_cap
 
   rs <- days[, .(person_id, date)]
   setorder(rs, person_id, date)
@@ -119,8 +118,7 @@ build_risk_set <- function(days, cfg) {
             return_day   = nafill(fifelse(gap_before > 0L, as.integer(date), NA_integer_), type = "locf")),
      by = person_id]
   rs[, any_prior_gap := !is.na(prev_gap_len)]
-  rs[, days_since_return := fifelse(any_prior_gap,
-                                    pmin(as.integer(date) - return_day, cap), 0L)]
+  rs[, days_since_return := fifelse(any_prior_gap, as.integer(date) - return_day, 0L)]          # not capped: the log2 transform handles the long tail
   rs[is.na(prev_gap_len), prev_gap_len := 0L]
 
   rs <- rs[!is.na(next_date)]            # the last observed day has no "next day"
@@ -129,9 +127,7 @@ build_risk_set <- function(days, cfg) {
 
   rs[, `:=`(t_date    = date + 1L,
             study_day = as.integer(date - first_date) + 1L)]
-  rs[, `:=`(dow_t  = factor(wday(t_date), levels = 1:7,
-                            labels = c("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")),
-            year_t = year(t_date))]
+  rs[, dow_t := factor(wday(t_date), levels = c(2:7, 1L), labels = c("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"))]     # Monday is the reference level
   rs[, c("next_date", "prev_date", "first_date", "gap_before", "return_day", "t_date") := NULL]
   setkey(rs, person_id, date)
   rs[]

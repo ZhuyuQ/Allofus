@@ -145,6 +145,10 @@ open_day_store <- function(cfg, dir) {
       if (length(cl) == 1L && nzchar(cl)) strsplit(cl, ",", fixed = TRUE)[[1L]] else names(read_day_table(dir, stream, format))
     },
     fingerprint = function(name) {
+      if (name == "device_person") {               # the device family is a covariate of every model: rebuilt device data must not reuse old results
+        f <- file.path(dir, "device_person.rds")
+        return(if (file.exists(f)) list(md5 = unname(tools::md5sum(f)), bytes = file.size(f)) else NULL)
+      }
       if (is.null(fp[[name]])) fp[[name]] <<- list(md5 = unname(tools::md5sum(paths[[name]])), bytes = file.size(paths[[name]]))
       fp[[name]]
     }), class = "day_store")
@@ -164,6 +168,7 @@ as_day_store <- function(day_tables, persons = NULL, device = NULL) {     # devi
     device_timeline = function() device$timeline,
     columns = function(stream) names(day_tables[[stream]]),
     fingerprint = function(name) {
+      if (name == "device_person") return(if (!is.null(device)) fingerprint_table(device$person) else NULL)
       if (is.null(fp[[name]])) fp[[name]] <<- fingerprint_table(if (name == "persons") persons else day_tables[[name]])
       fp[[name]]
     }), class = "day_store")
@@ -180,7 +185,17 @@ print.day_store <- function(x, ...) {
 data_key <- function(store, stream) {
   list(days = store$fingerprint(stream),
        act = if (stream != "activity") store$fingerprint("activity"),
-       persons = store$fingerprint("persons"))
+       persons = store$fingerprint("persons"),
+       device = device_fingerprint(store))
+}
+
+# Fingerprint of the device table. Also works for a day store object created by an older version of this code (its fingerprint()
+# does not know "device_person"): then the file is read from the store's folder.
+device_fingerprint <- function(store) {
+  tryCatch(store$fingerprint("device_person"), error = function(e) {
+    f <- if (!is.null(store$dir)) file.path(store$dir, "device_person.rds")
+    if (!is.null(f) && file.exists(f)) list(md5 = unname(tools::md5sum(f)), bytes = file.size(f)) else NULL
+  })
 }
 
 # ---- cohort assignment and CCI -----------------------------------------------

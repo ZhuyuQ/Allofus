@@ -36,9 +36,9 @@ rows collapsed to one row per day). **Gap**: >= 1 consecutive calendar days with
 Odds ratios of every term are `OR = exp(beta)`; for `w_` terms they are **per +1 SD higher** than the person's usual (OR < 1: higher-than-usual days are followed by fewer gaps).
 
 **Adjusters** (adjusted models; `cohort` has **Healthy as the reference level** (`cfg$reference_cohort`), so each cohort coefficient compares that cohort with Healthy; a term that is constant in the data, e.g. `sex2` in an all-male cohort, is dropped automatically):
-`cohort`, `age10 = (age at first record - 60)/10`, `sex2` (Female/Male), `dow_t` (weekday of day d+1), `ns(study_day, 3)` (natural spline, 3 df, of days since the
-first record), `factor(year_t)` (calendar year of day d+1; levels are fixed once per stream from the whole risk set: years with fewer than `cfg$model$year_min_events` (10) gap starts are pooled with the neighbouring year that has more, and the reference is the level with the most gap starts, which gives every year contrast its smallest standard error; the fit and all other estimates are the same whichever level is the reference), `prev_gap_len_l = log(1 + length of the most recent completed gap, 0 if none)`,
-`any_prior_gap`, `days_since_return_l = log(1 + days since the last return from a gap, capped at 60, 0 if none)`.
+`cohort`, `age10 = age at first record / 10` (per 10 years, not centred), `sex2` (Female/Male), `dow_t` (weekday of day d+1; reference Monday), `ns(study_day, 3)` (natural spline, 3 df, of days since the
+first record), `device` (the person's main Fitbit device FAMILY, time-invariant: reference = the largest family that is not Missing, "Missing" = no usable watch device, small wrist families pooled as "Other wrist-worn", clip-on/phone its own level), `cci` (Charlson score per +1 point; people without a score get the median and `cci_missing = 1`), `prev_gap_len_l = log2(1 + length of the most recent completed gap, 0 if none)`,
+`any_prior_gap`, `days_since_return_l = log2(1 + days since the last return from a gap, not capped, 0 if none)`. Calendar year is not a covariate. CCI is strongly tied to cohort: its GVIF is reported and the sensitivity refits `cci_removed`, `cci_as_groups` (reference = most common group, "Unknown" level) and `cci_within_cohort` (score minus the cohort mean) are run.
 
 ## 1. Gap-onset model (primary, model D and the exploratory grid)
 
@@ -55,21 +55,21 @@ Primary `k = 1`; model D `k = 2, 3, 7`.
 
     y_ge1 ~ w_act_steps + w_act_sedentary + w_act_mvpa
           + b_act_steps + b_act_sedentary + b_act_mvpa
-          + cohort + age10 + sex2 + dow_t + ns(study_day, 3) + factor(year_t)
+          + cohort + age10 + sex2 + dow_t + ns(study_day, 3) + device + cci + cci_missing
           + prev_gap_len_l + any_prior_gap + days_since_return_l + (1 | person_id)
 
 **Sleep stream** (outcome: a *sleep* gap starts tomorrow; predictors: yesterday's sleep and activity)
 
     y_ge1 ~ w_sleep_inbed + w_sleep_eff + w_act_steps + w_act_sedentary + w_act_mvpa
           + b_sleep_inbed + b_sleep_eff + b_act_steps + b_act_sedentary + b_act_mvpa
-          + cohort + age10 + sex2 + dow_t + ns(study_day, 3) + factor(year_t)
+          + cohort + age10 + sex2 + dow_t + ns(study_day, 3) + device + cci + cci_missing
           + prev_gap_len_l + any_prior_gap + days_since_return_l + (1 | person_id)
 
 **Heart-rate stream** (outcome: a *heart-rate* gap starts tomorrow; predictors: yesterday's heart-rate coverage / elevated minutes and activity)
 
     y_ge1 ~ w_hr_cover + w_hr_elev + w_act_steps + w_act_sedentary + w_act_mvpa
           + b_hr_cover + b_hr_elev + b_act_steps + b_act_sedentary + b_act_mvpa
-          + cohort + age10 + sex2 + dow_t + ns(study_day, 3) + factor(year_t)
+          + cohort + age10 + sex2 + dow_t + ns(study_day, 3) + device + cci + cci_missing
           + prev_gap_len_l + any_prior_gap + days_since_return_l + (1 | person_id)
 
 (`sex2` is dropped automatically wherever it is constant, e.g. in the cohort-specific fit of Prostate; `cohort` is dropped in cohort-specific fits.)

@@ -6,7 +6,11 @@ if (!exists("make_config")) {
 }
 suppressMessages(library(data.table))
 
-cfg_test <- function(...) make_config(list(boot = list(B = 30L), ...))
+cfg_test <- function(...) {
+  cfg <- make_config(list(boot = list(B = 30L), ...))
+  if (is.null(list(...)$model$adjust_device)) cfg$model$adjust_device <- FALSE        # the test persons have no device information (the device tests build it)
+  cfg
+}
 
 # Brute-force gap detection on an explicit calendar grid (the slow, obviously-correct way)
 naive_gaps <- function(dates) {
@@ -47,7 +51,7 @@ primary_spec <- function(cfg, which_stream = "activity") {
 # some people with two devices, some rows without a date.
 sim_device_rows <- function(persons, cfg, seed = 11) {
   set.seed(seed)
-  mix <- list(Healthy  = c("Charge 5" = .30, "Versa 4" = .20, "MobileTrack" = .15, "Versa 3" = .10, "Inspire 2" = .08, "Sense" = .07, "Alta HR" = .05, "Luxe" = .05),
+  mix <- list(Healthy  = c("Charge 5" = .30, "Versa 4" = .20, "MobileTrack" = .15, "Versa 3" = .10, "Inspire 2" = .08, "Sense" = .07, "Alta HR" = .05, "Luxe" = .03, "Zip" = .02),
               Insomnia = c("Charge 5" = .25, "Versa 4" = .20, "MobileTrack" = .25, "Versa 3" = .08, "Inspire 2" = .08, "Sense" = .06, "Alta HR" = .04, "Zip" = .04),
               Diabetes = c("Charge 5" = .25, "Versa 4" = .20, "MobileTrack" = .22, "Versa 3" = .10, "Inspire 2" = .08, "Sense" = .06, "Alta HR" = .05, "Flex" = .04),
               Prostate = c("Charge 5" = .35, "Versa 4" = .25, "Inspire 2" = .10, "Versa 3" = .10, "Sense" = .10, "Charge 4" = .10))

@@ -12,7 +12,7 @@ test_that("run_unit computes once, then resumes, and never reuses a result made 
   r2 <- quiet(run_unit(dir, unit_a, key_a(), compute)); expect_equal(r2$status, "resumed")
   expect_equal(n, 1); expect_equal(r2$value$v, 1)
 
-  cfg2 <- cfg_ck(); cfg2$onset$days_since_cap <- 30L                       # result-changing setting
+  cfg2 <- cfg_ck(); cfg2$model$adjust_cci <- !isTRUE(cfg2$model$adjust_cci)                      # result-changing setting
   expect_equal(quiet(run_unit(dir, unit_a, key_a(cfg2), compute))$status, "computed")
   expect_equal(quiet(run_unit(dir, unit_a, key_a(data = list(days = list(md5 = "y"))), compute))$status, "computed")   # new data
   expect_equal(quiet(run_unit(dir, unit_a, key_a(spec = list(k = 2L)), compute))$status, "computed")                     # new spec
@@ -126,4 +126,15 @@ test_that("worker count is capped by free memory and at least one", {
   cfg <- cfg_test(); cfg$resources$memory_budget_gb <- 10; cfg$resources$memory_reserve_gb <- 0
   expect_equal(n_workers(cfg, per_worker_gb = 100, requested = 4L), 1L)
   expect_lte(n_workers(cfg, per_worker_gb = 0.001, requested = 3L), 3L)
+})
+
+test_that("a day store opened by older code (no device methods) still gives a data key, and the pipeline reopens it", {
+  cfg <- cfg_test(); inp <- suppressMessages(simulate_inputs(cfg, n_per_cohort = c(Insomnia = 20, Diabetes = 20, Healthy = 30, Prostate = 10), seed = 2))
+  dir <- file.path(tempdir(), "old_store"); unlink(dir, recursive = TRUE); dir.create(dir)
+  for (s in names(inp$day_tables)) write_day_table(inp$day_tables[[s]], dir, s, "rds")
+  saveRDS(inp$persons, file.path(dir, "persons.rds"))
+  st <- open_day_store(cfg, dir)
+  old <- st; old$device_person <- NULL; old$fingerprint <- function(name) { if (name == "device_person") list(md5 = "x")[["nope"]][[1L]] ; paths <- st$paths; unname(tools::md5sum(paths[[name]])) }
+  expect_error(old$fingerprint("device_person"))
+  expect_silent(dk <- data_key(old, "activity")); expect_null(dk$device)
 })

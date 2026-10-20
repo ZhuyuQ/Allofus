@@ -4,7 +4,7 @@
 #   source("<path>/missingness/load_missingness.R"); load_missingness("<path>/missingness")
 # ==============================================================================
 load_missingness <- function(root = ".") {
-  files <- c("utils", "config", "io", "etl", "persons", "gaps", "predictors",
+  files <- c("utils", "config", "io", "etl", "persons", "covariates", "gaps", "predictors",
              "device", "outcome_variables", "collinearity", "onset_model", "sensitivity", "gap_models", "wear_consistency", "summarise", "temporal",
              "descriptive", "plots", "plots_effects", "report", "bq_export", "simulate", "pipeline")
   for (f in files) source(file.path(root, "R", paste0(f, ".R")), chdir = FALSE)

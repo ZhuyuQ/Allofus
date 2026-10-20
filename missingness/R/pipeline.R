@@ -127,6 +127,17 @@ run_missingness_pipeline <- function(day_tables, persons, cfg, outdir,
                                      model_streams = NULL, save_figures = TRUE) {
   set.seed(cfg$seed)
   store   <- as_day_store(day_tables, persons)
+  if (inherits(store, "day_store") && identical(store$kind, "files") && is.null(store$device_person))      # a store opened by an older version of the code: open it again
+    store <- open_day_store(cfg, store$dir)
+  # the main device family of each person (device.R) joins the person table: it is a covariate of every model (replaces calendar year)
+  dp_store <- store$device_person()
+  if (!is.null(dp_store))
+    persons <- data.table::setkey(merge(data.table::as.data.table(persons), data.table::as.data.table(dp_store)[, .(person_id, device_family)],
+                                        by = "person_id", all.x = TRUE, sort = FALSE), person_id)
+  if (any(c("onset", "gap_models", "sensitivity", "wear_strata") %in% stages) && isTRUE(cfg$model$adjust_device) && !"device_family" %in% names(persons))
+    stop("the models use the device family as a covariate but no device information is in L1: run Cell 6c (export) and Cell 8b (run_etl_device) first, ",
+         "or set cfg$model$adjust_device <- FALSE", call. = FALSE)
+  if ("device_family" %in% names(persons)) cfg$device$reference_used <- device_reference(persons, cfg)
   streams <- store$streams
   model_streams <- model_streams %||% streams
   bad <- setdiff(model_streams, streams)
@@ -262,10 +273,8 @@ run_missingness_pipeline <- function(day_tables, persons, cfg, outdir,
     }
     for (s in model_streams) {                    # one forest plot of ALL predictors, and one observed-rate figure, per stream
       if (!is.null(res$onset_coefficients) && nrow(res$onset_coefficients) > 0L) {
-        for (pt in c("year", "other")) {          # part 1: calendar years, part 2: everything else
-          p <- plot_onset_forest_all(res$onset_coefficients, s, cfg, part = pt)
-          if (!is.null(p)) fig(paste0("onset_forest_", pt, "_", s), p)
-        }
+        p <- plot_onset_forest_all(res$onset_coefficients, s, cfg)
+        if (!is.null(p)) fig(paste0("onset_forest_other_", s), p)
       }
       if (!is.null(res$onset_deciles) && nrow(res$onset_deciles) > 0L) {
         p <- plot_onset_deciles(res$onset_deciles, s, cfg)
@@ -277,10 +286,8 @@ run_missingness_pipeline <- function(day_tables, persons, cfg, outdir,
       if (is.null(oc) || nrow(oc) == 0L) next
       dd <- oc[set_name == "joint" & adjusted & role %in% c("primary", "secondary_threshold")]
       glab <- setNames(sprintf("gap >= %d day%s", sort(unique(dd$k)), ifelse(sort(unique(dd$k)) > 1L, "s", "")), as.character(sort(unique(dd$k))))
-      for (pt in c("year", "other")) {
-        p <- if (nrow(dd) > 0L) plot_effects_by_group(dd, s, cfg, "k", glab, pt, paste0("Gap Definitions: All Terms of the Onset Model (", nice_label(s), " Stream)"), SUBTITLE_OR) else NULL
-        if (!is.null(p)) fig(paste0("gap_definition_all_terms_", pt, "_", s), p)
-      }
+      p <- if (nrow(dd) > 0L) plot_effects_by_group(dd, s, cfg, "k", glab, "other", paste0("Gap Definitions: All Terms of the Onset Model (", nice_label(s), " Stream)"), subtitle_or(cfg)) else NULL
+      if (!is.null(p)) fig(paste0("gap_definition_all_terms_other_", s), p)
       p <- plot_exploratory_grid(oc, s, cfg); if (!is.null(p)) fig(paste0("exploratory_grid_effects_", s), p)
     }
     if (!is.null(res$risk_unadjusted) && "risk" %in% names(res$risk_unadjusted)) fig("risk_curve", plot_risk_curve(res$risk_unadjusted, cfg), 7, 9)
@@ -343,11 +350,9 @@ run_missingness_pipeline <- function(day_tables, persons, cfg, outdir,
         p <- plot_sensitivity_forest_stream(res$sensitivity_all_terms, s, cfg)
         if (!is.null(p)) fig(paste0("sensitivity_forest_", s), p)
         sl <- setNames(nice_label(intersect(SENSITIVITY_ORDER, unique(res$sensitivity_all_terms$analysis))), intersect(SENSITIVITY_ORDER, unique(res$sensitivity_all_terms$analysis)))
-        for (pt in c("year", "other")) {          # ALL terms, the primary analysis (main) against every sensitivity analysis
-          p <- plot_effects_by_group(res$sensitivity_all_terms, s, cfg, "analysis", sl, pt,
-                                     paste0("Sensitivity Analyses: All Terms (", nice_label(s), " Stream)"), SUBTITLE_OR)
-          if (!is.null(p)) fig(paste0("sensitivity_all_terms_", pt, "_", s), p)
-        }
+        p <- plot_effects_by_group(res$sensitivity_all_terms, s, cfg, "analysis", sl, "other",       # ALL terms, the primary analysis (main) against every sensitivity analysis
+                                   paste0("Sensitivity Analyses: All Terms (", nice_label(s), " Stream)"), subtitle_or(cfg))
+        if (!is.null(p)) fig(paste0("sensitivity_all_terms_other_", s), p)
       }
     }
   }
@@ -359,7 +364,7 @@ run_missingness_pipeline <- function(day_tables, persons, cfg, outdir,
     ds <- device_summary(dp, persons, cfg)
     res <- c(res, ds)
     fig("device_version_missing_and_composition", plot_device_composition(ds, cfg), 11, 6)
-    fig("device_cohort_mix_by_version", plot_device_cohort_mix(ds, cfg), 11, 6.5)
+    fig("device_version_within_cohort", plot_device_versions(ds, cfg), 11, 8)
   }
 
   # ---- person-level % of days missing against every model variable (cohort, sex, watch version, age, between-person predictor levels) ----
@@ -373,15 +378,15 @@ run_missingness_pipeline <- function(day_tables, persons, cfg, outdir,
       inputs <- stream_inputs(store, s, cfg)
       means <- person_predictor_means(inputs, names(spec), cfg); rm(inputs)
       ovs[[s]] <- outcome_variable_analysis(outcome_variable_data(pgs, persons, dp, means, cfg), s, cfg, spec)
-      fig(paste0("outcome_by_variable_continuous_", s), plot_outcome_continuous(ovs[[s]], s, spec, cfg))
       rm(pgs, means); invisible(gc())
     }
-    fig("outcome_by_variable_categorical", plot_outcome_categorical(ovs, cfg), 14, 3.4 * length(ovs) + 1.8)
+    for (v in unique(unlist(lapply(ovs, function(a) a$tests$variable)))) fig(paste0("outcome_by_variable_", v), plot_outcome_variable(ovs, v, cfg))      # one figure per variable
     res$outcome_variable_tests      <- rbindlist(lapply(ovs, `[[`, "tests"), fill = TRUE)
     res$outcome_variable_contrasts  <- rbindlist(lapply(ovs, `[[`, "contrasts"), fill = TRUE)
     res$outcome_variable_models     <- rbindlist(lapply(ovs, `[[`, "models"), fill = TRUE)
     res$outcome_variable_summary    <- rbindlist(lapply(ovs, `[[`, "summary"), fill = TRUE)
-    res$outcome_variable_bins       <- rbindlist(lapply(ovs, `[[`, "bins"), fill = TRUE)
+    res$outcome_variable_cells      <- rbindlist(lapply(ovs, `[[`, "cells"), fill = TRUE)
+    res$outcome_variable_by_cohort  <- rbindlist(lapply(ovs, `[[`, "by_cohort"), fill = TRUE)
   }
 
   # ---- 7b. wear consistency: characterization (descriptive) and, for "wear_strata", the models within each stratum ----
@@ -420,22 +425,20 @@ run_missingness_pipeline <- function(day_tables, persons, cfg, outdir,
     fig("wear_strata_primary_effect", plot_wear_primary_effect(res$wear_strata_comparison, cfg), 11, 6)
     sg <- c(Consistent = "Consistent wear", Inconsistent = "Inconsistent wear")
     for (s in model_streams) {
-      for (pt in c("year", "other")) {
-        p <- if (nrow(res$wear_strata_onset_coefficients) > 0L)
-          plot_effects_by_group(res$wear_strata_onset_coefficients[role == "primary"], s, cfg, "wear_stratum", sg, pt,
-                                paste0("Onset Model by Wear Consistency: All Terms (", nice_label(s), " Stream)"), SUBTITLE_OR) else NULL
-        if (!is.null(p)) fig(paste0("wear_strata_onset_all_terms_", pt, "_", s), p)
-      }
+      p <- if (nrow(res$wear_strata_onset_coefficients) > 0L)
+        plot_effects_by_group(res$wear_strata_onset_coefficients[role == "primary"], s, cfg, "wear_stratum", sg, "other",
+                              paste0("Onset Model by Wear Consistency: All Terms (", nice_label(s), " Stream)"), subtitle_or(cfg)) else NULL
+      if (!is.null(p)) fig(paste0("wear_strata_onset_all_terms_other_", s), p)
       if (nrow(res$wear_strata_gapB_all_terms) > 0L) {
         p <- plot_effects_by_group(res$wear_strata_gapB_all_terms, s, cfg, "wear_stratum", sg, "other",
                                    paste0("Model B by Wear Consistency: All Terms (", nice_label(s), " Stream)"),
-                                   "Change in activity on the first full day back (SD of the person's usual): per doubling of the gap, age per 10 years, cohorts against Healthy.", measure = "estimate")
+                                   paste0("Change in activity on the first full day back (SD of the person's usual): per doubling of the gap. ", covariate_note(cfg)), measure = "estimate")
         if (!is.null(p)) fig(paste0("wear_strata_gapB_all_terms_", s), p)
       }
       if (nrow(res$wear_strata_gapC_all_terms) > 0L) {
         p <- plot_effects_by_group(res$wear_strata_gapC_all_terms, s, cfg, "wear_stratum", sg, "other",
                                    paste0("Model C by Wear Consistency: All Terms (", nice_label(s), " Stream)"),
-                                   "Odds of a longer gap (ordinal model): steps before the gap per +1 SD, age per 10 years, cohorts against Healthy.")
+                                   paste0("Odds of a longer gap (ordinal model): steps before the gap per +1 SD. ", covariate_note(cfg)))
         if (!is.null(p)) fig(paste0("wear_strata_gapC_all_terms_", s), p)
       }
     }

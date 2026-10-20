@@ -45,7 +45,7 @@ test_that("term-level Wald tests are the joint test of all coefficients of a ter
 
 test_that("every fitted onset model reports GVIF per term (factors / splines as one term) and the joint Wald tests, from its own fit", {
   s <- small_study(-0.5); r <- fit_onset_spec(s$b, primary_spec(s$cfg), s$cfg)
-  expect_true(all(c("w_act_steps", "b_act_steps", "cohort", "dow_t", "splines::ns(study_day, 3)", "factor(year_t)", "prev_gap_len_l") %in% r$gvif$term))
+  expect_true(all(c("w_act_steps", "b_act_steps", "cohort", "dow_t", "splines::ns(study_day, 3)", "cci", "prev_gap_len_l") %in% r$gvif$term))
   expect_equal(r$gvif[term == "cohort", df], 3L); expect_equal(r$gvif[term == "dow_t", df], 6L)
   expect_true(all(c("spec_id", "stream", "role", "standardization", "vif_equiv", "flag") %in% names(r$gvif)))
   expect_equal(r$wald[term == "w_act_steps", chisq], (r$coef[term == "w_act_steps", estimate] / r$coef[term == "w_act_steps", se])^2, tolerance = 1e-6)   # joint test of one term = Wald z^2

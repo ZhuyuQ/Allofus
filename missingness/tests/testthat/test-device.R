@@ -39,6 +39,25 @@ test_that("person table: main version, status of everybody (also people without 
   expect_equal(build_device_tables(r2, persons, cfg)$person[person_id == 1, device_version_main], "Versa 3")
 })
 
+test_that("a scale counts as missing (it records weight only), a clip-on / phone does not", {
+  cfg <- cfg_dev(); persons <- dev_persons()
+  raw <- rbind(data.table(person_id = 1, device_date = as.Date("2022-01-01"), device_version = "Aria 2", device_type = "SCALE"),
+               data.table(person_id = 2, device_date = as.Date("2022-01-01"), device_version = "Zip", device_type = "TRACKER"))
+  p <- build_device_tables(raw, persons, cfg)$person
+  expect_true(p[person_id == 1, device_missing]); expect_equal(p[person_id == 1, device_family], cfg$device$missing_label)
+  expect_false(p[person_id == 2, device_missing]); expect_equal(p[person_id == 2, device_family], cfg$device$nonwrist_label)
+})
+
+test_that("a scale is recognised by its name when the export has no device_type (older exports)", {
+  cfg <- cfg_dev(); persons <- dev_persons()
+  raw <- rbind(data.table(person_id = 1, device_date = as.Date("2022-01-01"), device_version = "Aria Air"),
+               data.table(person_id = 2, device_date = as.Date("2022-01-01"), device_version = "Aria 2"),
+               data.table(person_id = 2, device_date = as.Date("2022-01-02"), device_version = "Versa 3"))
+  p <- build_device_tables(raw, persons, cfg)$person
+  expect_equal(p[person_id == 1, status], DEVICE_STATUS[["scale_only"]])                    # not "phone or clip-on only"
+  expect_equal(p[person_id == 2, device_version_main], "Versa 3")
+})
+
 test_that("only WATCH data counts: phone tracking and clip-ons are not a watch version, and the wrist definition is configurable", {
   cfg <- cfg_dev(); persons <- dev_persons()
   raw <- rbind(data.table(person_id = 1, device_date = as.Date("2022-01-01") + 0:3, device_version = "MobileTrack", device_type = "TRACKER"),                   # phone only
@@ -47,7 +66,10 @@ test_that("only WATCH data counts: phone tracking and clip-ons are not a watch v
                data.table(person_id = 3, device_date = as.Date("2022-02-01"), device_version = "Versa 3", device_type = "TRACKER"),                            # -> the watch is the main device
                data.table(person_id = 4, device_date = as.Date("2022-01-01"), device_version = "Alta HR", device_type = "TRACKER"))                           # band
   p <- build_device_tables(raw, persons, cfg)$person
-  expect_equal(p[person_id %in% 1:2, status], rep(DEVICE_STATUS[["non_wrist"]], 2L)); expect_true(all(p[person_id %in% 1:2, device_missing]))
+  expect_equal(p[person_id %in% 1:2, status], rep(DEVICE_STATUS[["non_wrist"]], 2L))
+  expect_false(any(p[person_id %in% 1:2, device_missing]))                              # activity data: NOT missing ...
+  expect_equal(p[person_id %in% 1:2, device_family], rep(cfg$device$nonwrist_label, 2L))   # ... but their own category, not a watch
+  expect_equal(p[person_id %in% 1:2, device_version_main], c("MobileTrack", "Zip"))
   expect_equal(p[person_id == 3, .(device_version_main, device_form_main, n_wearable_versions)], data.table(device_version_main = "Versa 3", device_form_main = "smartwatch", n_wearable_versions = 1L))
   expect_equal(p[person_id == 4, device_family], "Alta")
   tl <- build_device_tables(raw, persons, cfg)$timeline; expect_false(any(tl$device_version %in% c("MobileTrack", "Zip")))
@@ -97,7 +119,7 @@ test_that("device_summary: missing share per cohort with intervals, the tests, t
   comp <- ds$device_composition_by_cohort
   expect_equal(comp[, .(s = sum(pct)), by = cohort]$s, rep(100, uniqueN(comp$cohort)), tolerance = 1e-8)      # each cohort sums to 100%
   expect_equal(levels(comp$category)[1L], cfg$device$missing_label)
-  tt <- ds$device_tests; expect_equal(nrow(tt), 3L); expect_true(all(tt$cramers_v >= 0 & tt$v_low <= tt$v_high, na.rm = TRUE))
+  tt <- ds$device_tests; expect_equal(nrow(tt), 4L); expect_true(all(tt$cramers_v >= 0 & tt$v_low <= tt$v_high, na.rm = TRUE))
   expect_equal(ds$device_composition_residuals[, sum(observed)], nrow(persons))
   expect_true(all(c("device_version", "pct_of_known") %in% names(ds$device_version_by_cohort)))
   expect_false(any(is.na(ds$device_switching_by_cohort$n_known)))
@@ -110,9 +132,16 @@ test_that("the combined figure builds and the stage 'device' writes its tables, 
   ds <- device_summary(tabs$person, persons, cfg)
   p <- plot_device_composition(ds, cfg); expect_s3_class(p, "ggplot"); invisible(ggplot2::ggplot_build(p))
   expect_false(any(vapply(p$layers, function(l) inherits(l$geom, "GeomErrorbar"), logical(1))))                # no interval bars on the barplot
-  p2 <- plot_device_cohort_mix(ds, cfg); expect_s3_class(p2, "ggplot"); invisible(ggplot2::ggplot_build(p2))
-  expect_equal(levels(ds$device_cohort_mix$category)[1L], "All people")
-  expect_equal(ds$device_cohort_mix[category != "All people", sum(pct_of_category), by = category]$V1, rep(100, uniqueN(ds$device_cohort_mix$category) - 1L), tolerance = 1e-8)
+  p2 <- plot_device_versions(ds, cfg); expect_s3_class(p2, "ggplot"); invisible(ggplot2::ggplot_build(p2))
+  expect_true(any(vapply(p2$layers, function(l) inherits(l$geom, "GeomBar"), logical(1))))                      # bars ...
+  expect_false(any(vapply(p2$layers, function(l) inherits(l$geom, c("GeomPointrange", "GeomErrorbar", "GeomLinerange")), logical(1))))   # ... and no intervals
+  v <- ds$device_version_by_cohort
+  expect_equal(v[, .(s = sum(pct_of_known)), by = cohort]$s, rep(100, uniqueN(v$cohort)), tolerance = 1e-8)         # versions add up to 100% of the people with a device in each cohort
+  expect_true(all(v$pct_low <= v$pct_of_known & v$pct_of_known <= v$pct_high))
+  vt <- ds$device_version_tests; expect_equal(sum(vt$n_people), sum(v$n_people) / 1L)
+  expect_true(all(vt$p_holm >= vt$p_monte_carlo - 1e-12) && all(vt$cramers_v >= 0))
+  expect_true(any(grepl("VERSION", ds$device_tests$test)))
+  expect_false("device_cohort_mix" %in% names(ds))
   expect_equal(device_missing_label <- cfg$device$missing_label, "Missing")
   store <- as_day_store(s$inp$day_tables, persons, device = tabs)
   out <- file.path(tempdir(), "dev_stage"); unlink(out, recursive = TRUE)
@@ -120,8 +149,8 @@ test_that("the combined figure builds and the stage 'device' writes its tables, 
   expect_true(file.exists(file.path(out, "figures", "device_version_missing_and_composition.png")))
   expect_true(all(file.exists(file.path(out, "tables", paste0(c("device_missing_by_cohort", "device_tests", "device_composition_by_cohort", "device_missing_model"), ".tsv")))))
   fi <- fread(file.path(out, "figures", "figure_index.tsv")); expect_equal(fi[figure == "device_version_missing_and_composition.png", step], 3L)
-  expect_true(file.exists(file.path(out, "figures", "device_cohort_mix_by_version.png")))
-  expect_match(readLines(file.path(out, "figures", "figure_captions.md")) |> paste(collapse = " "), "cohort mix of all people")
+  expect_true(file.exists(file.path(out, "figures", "device_version_within_cohort.png")))
+  expect_match(readLines(file.path(out, "figures", "figure_captions.md")) |> paste(collapse = " "), "device versions within each cohort")
   ti <- fread(file.path(out, "tables", "table_index.tsv")); expect_true(all(ti[grepl("^device_", table), step] == 3L))
   # without device information the stage says what to run
   expect_error(suppressMessages(run_missingness_pipeline(as_day_store(s$inp$day_tables, persons), persons, cfg, out, stages = "device")), "Cell 8b")
@@ -142,4 +171,12 @@ test_that("run_etl_device reads the four exports, writes device_person / device_
   st <- open_day_store(cfg, dir) |> tryCatch(error = function(e) NULL)                          # no day tables here; the accessor is what matters
   expect_equal(nrow(r$person), nrow(persons))
   expect_error(suppressMessages(run_etl_device(cfg, dir, lister = function(p) stop("none"), reader = reader)), "Run Cell 6c")
+})
+
+test_that("show_figure says where a figure is (or that it is missing) and never fails outside Jupyter", {
+  out <- file.path(tempdir(), "show_fig"); dir.create(file.path(out, "figures"), recursive = TRUE, showWarnings = FALSE)
+  expect_output(r0 <- show_figure(out, "nope"), "not found"); expect_null(r0)
+  png(file.path(out, "figures", "x.png")); plot(1); invisible(dev.off())
+  expect_output(show_figure(out, "x"), "saved:")
+  expect_true(file.exists(show_figure(out, "x")))
 })

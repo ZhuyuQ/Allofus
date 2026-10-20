@@ -50,6 +50,15 @@ write_run_metadata <- function(cfg, outdir, store = NULL, extra = list()) {
   invisible(outdir)
 }
 
+# Show a saved figure under a notebook cell (Jupyter, via IRdisplay); elsewhere just say where it is.
+show_figure <- function(outdir, name) {
+  f <- file.path(outdir, "figures", paste0(name, ".png"))
+  if (!file.exists(f)) { cat("figure not found:", f, "\n"); return(invisible(NULL)) }
+  in_jupyter <- isTRUE(getOption("jupyter.in_kernel")) && requireNamespace("IRdisplay", quietly = TRUE)       # IRkernel sets this option
+  if (in_jupyter) IRdisplay::display_png(file = f) else cat("saved:", f, "\n")
+  invisible(f)
+}
+
 # ---- execution summary: what is done, what failed, what was skipped ---------------------------------------
 
 # The analysis step and the model a figure belongs to, in the order of the workflow:

@@ -69,7 +69,12 @@ make_config <- function(overrides = list()) {
       wrist_forms = c("smartwatch", "band"),
       families    = c(Charge = "^Charge", Versa = "^Versa", Sense = "^Sense", Inspire = "^Inspire", Alta = "^Alta", Luxe = "^Luxe"),
       other_label = "Other wrist-worn",
+      nonwrist_label = "Clip-on or phone",   # people whose only usable device is a clip-on tracker or phone tracking: they have ACTIVITY data but no watch (not "missing")
+      min_version_people = 10L,              # watch versions used by fewer people (all cohorts together) are pooled in the version figure / tests
+      min_family_people  = 50L,              # model covariate: wrist-worn families with fewer people are pooled as `other_label`
+      reference          = NULL,             # model covariate reference family; NULL = the largest family that is not Missing
       scale_types = "SCALE",
+      scale_versions = "^Aria",     # scales are also recognised by name (older exports have no device_type column)
       missing_label = "Missing",
       mc_B   = 10000L,       # Monte-Carlo replicates for the p value of the composition chi-square (sparse cells)
       boot_B = 1000L         # bootstrap replicates for the interval of Cramer's V
@@ -78,7 +83,8 @@ make_config <- function(overrides = list()) {
     # ---- person-level % of days missing against every model variable (stage "variables") ----
     outcome_vars = list(min_n = 5L,          # levels with fewer people are drawn but not tested
                         boot_B = 300L,       # bootstrap replicates for the interval of the effect size (epsilon-squared / Cliff's delta)
-                        bins = 10L,          # quantile bins of a continuous variable (bin mean +/- 95% interval)
+                        bins = 10L,          # quantile bins of a continuous variable (pooled over cohorts)
+                        min_cell = 10L,      # a cohort x bin (or cohort x level) cell with fewer people is not drawn
                         points_max = 4000L), # people drawn as background points of a scatter (seeded sample; tests use everybody)
 
     # ---- storage of the compact day tables (L1) ------------------------------
@@ -144,7 +150,6 @@ make_config <- function(overrides = list()) {
       secondary_k       = c(2L, 3L, 7L),   # model D: stricter gap definitions
       trailing_n        = 14L,             # trailing baseline = last 14 observed days
       trailing_min_n    = 7L,              # ... needing at least 7 of them
-      days_since_cap    = 60L,             # cap for "days since last gap ended"
       # a prior day is "partial wear" if any of these (R expressions on the day
       # table columns) is TRUE -> excluded in the partial-wear sensitivity
       partial_wear = list(activity = "steps < 500 | sedentary_minutes >= 1380",
@@ -160,7 +165,8 @@ make_config <- function(overrides = list()) {
       nAGQ                    = 0L,          # only used when engine == "lme4"
       min_events              = 100L,        # below this a model is "not estimable"
       min_persons_with_events = 30L,
-      year_min_events         = 10L,         # calendar years with fewer gap starts are pooled with a neighbouring year (reference = year with most gap starts)
+      adjust_cci              = TRUE,        # CCI score (+ missing flag) as a covariate of every adjusted model (see covariates.R)
+      adjust_device           = TRUE,        # main Fitbit device FAMILY as a covariate (needs Cells 6c and 8b); replaces calendar year
       sample_persons          = NULL,        # NULL = everybody. e.g. 2000 -> fit on a seeded random sample
                                              # of people (an explicit choice: it changes the estimate's precision)
       # speed knob: fit only the EXPLORATORY specs on a seeded sample of people (NULL = all people)
@@ -221,7 +227,7 @@ make_config <- function(overrides = list()) {
                     Asian = "#27AE60", `More than one population` = "#8E44AD",
                     Other = "#95A5A6"),
       device    = c(Missing = "#E5E5E5", Charge = "#0072B2", Versa = "#E69F00", Sense = "#009E73", Inspire = "#CC79A7",
-                    Alta = "#56B4E9", Luxe = "#D55E00", `Other wrist-worn` = "#7F7F7F")
+                    Alta = "#56B4E9", Luxe = "#D55E00", `Other wrist-worn` = "#7F7F7F", `Clip-on or phone` = "#8C564B")
     ),
     plot = list(dpi = 150,
                 interval_style = "se",       # model figures: "se" = dot +/- 1 SD (standard error); "ci95" = dot + 95% interval; "box" = line + 50% box + 95% whiskers

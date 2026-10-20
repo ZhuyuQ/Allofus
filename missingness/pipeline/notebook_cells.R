@@ -158,22 +158,30 @@ print(res$wear_consistency_composition[imbalanced == TRUE, .(stream, variable, s
 # ==== CELL 11d   (data quality: missing Fitbit device version and device composition by cohort; person level, no model; needs Cells 6c and 8b; seconds)
 # WATCH data only: scales, clip-on trackers (One, Zip, Ultra, Classic) and phone tracking (MobileTrack) are NOT a watch version (cfg$device$forms / wrist_forms; the
 # default counts smartwatches and wristbands; use cfg$device$wrist_forms <- "smartwatch" for smartwatches only, then rerun Cells 8b and 11d).
-# Figures device_version_missing_and_composition (one bar per cohort: grey = no watch version, colours = watch family) and device_cohort_mix_by_version (the same table
-# read the other way: the cohort mix of each watch version), and the tables device_*:
+# Missing = no device record, scale only (weight only) or no version; "Clip-on or phone" = activity data but no watch (its own category, not missing).
+# Figures device_version_missing_and_composition (one bar per cohort: grey = missing, brown = clip-on or phone, colours = watch family) and device_version_within_cohort
+# (the device versions within each cohort, with Wilson intervals and a test per version), and the tables device_*:
 # missing share with Wilson intervals, chi-square / Cramer's V / Fisher tests, the model adjusted for age and sex, residuals, full version list.
 res <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, OUT_DIR, stages = "device")
 print(res$device_missing_by_cohort)
 print(res$device_tests[, .(test, chisq = round(chisq, 1), df, p_asymptotic = signif(p_asymptotic, 3), p_monte_carlo = signif(p_monte_carlo, 3), cramers_v = round(cramers_v, 3))])
 print(res$device_missing_vs_reference)
+print(res$device_version_tests[, .(device_version, group, n_people, pct_min = round(pct_min, 1), pct_max = round(pct_max, 1), cramers_v = round(cramers_v, 3), p_holm = signif(p_holm, 3))])   # per version: does its share differ between cohorts?
+show_figure(OUT_DIR, "device_version_missing_and_composition")   # the figures are saved in <OUT_DIR>/figures; these lines also show them here
+show_figure(OUT_DIR, "device_version_within_cohort")
 
-# ==== CELL 11e   (person-level % of days missing against EVERY model variable: cohort, sex, watch version, age, between-person level of each predictor; ~2-4 min, no model of the gap outcome)
-# Figures outcome_by_variable_categorical (one figure: cohort / sex / watch version x stream) and outcome_by_variable_continuous_<stream>; tables outcome_variable_tests (overall rank test,
-# effect size with bootstrap interval, Holm over the variables of the stream), _contrasts (each level against the reference), _models (odds ratio of a missing day, unadjusted and adjusted), _summary, _bins.
+# ==== CELL 11e   (person-level % of days missing against EVERY model variable, ONE figure per variable; ~3-5 min, no model of the gap outcome)
+# Variables: cohort, sex, CCI group, watch version, age, CCI score, and the between-person level of each model predictor. Each figure has the streams side by side: a continuous variable is one line per cohort
+# with a band over 10 bins, a categorical one is one violin per cohort within each level; the statistics are written below the figure. Figures outcome_by_variable_<variable>;
+# tables outcome_variable_tests (overall test, effect size with bootstrap interval, Holm over the variables of the stream, cohort-difference test), _by_cohort (rank correlation within each cohort),
+# _contrasts (each level against the reference), _models (odds ratio of a missing day, unadjusted and adjusted), _summary, _cells (the numbers behind the figures).
 # The watch version needs Cells 6c and 8b; without them it is left out.
 res <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, OUT_DIR, stages = "variables")
-print(res$outcome_variable_tests[, .(stream, variable, test, n, p_holm = signif(p_holm, 3), effect_name, effect = round(effect, 3), low = round(effect_low, 3), high = round(effect_high, 3))])
+print(res$outcome_variable_tests[, .(stream, variable, test, n, p_holm = signif(p_holm, 3), effect_name, effect = round(effect, 3), low = round(effect_low, 3), high = round(effect_high, 3),
+                                     p_cohorts_differ_holm = signif(p_cohort_difference_holm, 3))])
+for (v_ in unique(res$outcome_variable_tests$variable)) show_figure(OUT_DIR, paste0("outcome_by_variable_", v_))     # shows each saved figure here
 
-# ==== CELL 12   (Cells 12-14: onset models. Figures per stream: onset_forest_year_<stream> + onset_forest_other_<stream> = all predictors in two plots,
+# ==== CELL 12   (Cells 12-14: onset models. Figures per stream: onset_forest_other_<stream> = all predictors (incl. device family and CCI score; no calendar year),
 #                 onset_deciles_<stream> = observed gap rate by decile, gap_definition_all_terms_*_<stream> (model D), exploratory_grid_effects_<stream>,
 #                 collinearity_gvif_<stream>. Predictors are standardized with data observed BEFORE each day (pre-gap); models saved by an older
 #                 version of the code are refitted once.)
@@ -213,7 +221,7 @@ cat("failed units:", nrow(res$unit_failures), "\n")      # 0 = nothing failed; o
 if (nrow(res$unit_failures) > 0L) print(res$unit_failures)
 
 # ==== CELL 16   (sensitivity analyses, incl. the NEW full-period standardization; figures per stream: sensitivity_forest_<stream> = within-person
-#                predictors under every analysis, sensitivity_all_terms_other_/year_<stream> = ALL terms; units saved by an older version are
+#                predictors under every analysis, sensitivity_all_terms_other_<stream> = ALL terms (incl. the CCI refits cci_removed / cci_as_groups / cci_within_cohort); units saved by an older version are
 #                refitted ONCE - this is the long cell)
 res <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, OUT_DIR, stages = "sensitivity",
                                 model_streams = c("activity", "sleep", "hr"))

@@ -58,7 +58,7 @@ compare_cohorts <- function(pg, var, stream_name = NULL) {
 # for the odds that a day inside the window is missing, versus `ref`.
 fit_missing_fraction <- function(pg, persons, adjusted = FALSE, ref = "Healthy") {
   d <- merge(pg[, .(person_id, n_missing, n_observed)],
-             persons[, .(person_id, cohort, age10 = (age_first - 60) / 10,
+             persons[, .(person_id, cohort, age10 = age_first / 10,
                          sex2 = factor(as.character(sex), levels = c("Female", "Male")))],
              by = "person_id")
   d[, cohort := stats::relevel(factor(cohort), ref = ref)]

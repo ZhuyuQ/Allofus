@@ -8,8 +8,10 @@
 # Source: the CDR `device` table, one row per person x device x record date, with device_version ("Charge 5", "Versa 4",
 # "MobileTrack" ...) and device_type (TRACKER or SCALE). Scales are not watches, so
 #   * a person's WATCH version is taken from wrist-worn rows only (no scale, no clip-on, no phone tracking);
-#   * a person is "missing" the watch version when no such row with a version exists: no device record at all, scale
-#     only, phone / clip-on only, or rows without a version.
+#   * a person is "missing" the watch version when no usable device exists: no device record at all, scale only (a scale
+#     records weight, no activity / sleep / heart rate), or rows without a version;
+#   * a person whose only device is a clip-on tracker or phone tracking is NOT missing: that device gives ACTIVITY data. They form
+#     their own category ("Clip-on or phone"), not a watch version.
 # Person level (device_person): main version = the watch version with the most records (ties: the most recent record, then
 # alphabetical), its family (cfg$device$families), the number of different wearable versions, first / last record date.
 # Timeline (device_timeline): wearable rows with a record date, to give each DAY the device in use (device_at_dates()).
@@ -25,8 +27,9 @@
 #     test among people WITH a known device.
 # ==============================================================================
 
-DEVICE_STATUS <- c(known = "Watch version known", scale_only = "Scale only", non_wrist = "Phone or clip-on only (not worn on the wrist)",
+DEVICE_STATUS <- c(known = "Watch version known", scale_only = "Scale only", non_wrist = "Clip-on or phone only (no watch)",
                    no_version = "Device row without version", no_record = "No device record")
+DEVICE_MISSING_STATUS <- c("scale_only", "no_version", "no_record")         # people counted as missing (the status names above)
 
 # ---- small statistics helpers ----------------------------------------------------------------------------
 
@@ -118,6 +121,8 @@ normalise_device_rows <- function(raw, cfg) {
                device_type = toupper(trimws(as.character(device_type))))]
   out[!nzchar(device_version), device_version := NA_character_]
   out[, is_scale := device_type %in% toupper(cfg$device$scale_types)]
+  if (nzchar(cfg$device$scale_versions %||% ""))                                          # a scale is a scale even if the export has no device_type
+    out[!is.na(device_version) & grepl(cfg$device$scale_versions, device_version, ignore.case = TRUE), is_scale := TRUE]
   unique(out)
 }
 
@@ -137,6 +142,10 @@ build_device_tables <- function(raw, persons, cfg) {
               by = .(person_id, device_version, device_family, device_form)]
   data.table::setorderv(by_ver, c("person_id", "n_rows", "last_date", "device_version"), order = c(1L, -1L, -1L, 1L), na.last = TRUE)
   main <- by_ver[, .SD[1L], by = person_id][, .(person_id, device_version_main = device_version, device_family_main = device_family, device_form_main = device_form)]
+  # the clip-on / phone device of people without a watch (its version and form, for the version tables)
+  by_nw <- nw[wrist == FALSE, .(n_rows = .N, last_date = if (all(is.na(device_date))) as.Date(NA) else max(device_date, na.rm = TRUE)), by = .(person_id, device_version, device_form)]
+  data.table::setorderv(by_nw, c("person_id", "n_rows", "last_date", "device_version"), order = c(1L, -1L, -1L, 1L), na.last = TRUE)
+  main_nw <- by_nw[, .SD[1L], by = person_id][, .(person_id, device_version_nw = device_version, device_form_nw = device_form)]
   span <- w[, .(n_wearable_versions = uniqueN(device_version),
                 first_device_date = if (all(is.na(device_date))) as.Date(NA) else min(device_date, na.rm = TRUE),
                 last_device_date  = if (all(is.na(device_date))) as.Date(NA) else max(device_date, na.rm = TRUE)), by = person_id]
@@ -145,6 +154,7 @@ build_device_tables <- function(raw, persons, cfg) {
   p <- merge(p, main, by = "person_id", all.x = TRUE)
   p <- merge(p, span, by = "person_id", all.x = TRUE)
   p <- merge(p, nonwrist, by = "person_id", all.x = TRUE)
+  p <- merge(p, main_nw, by = "person_id", all.x = TRUE)
   p[is.na(n_nonwrist_rows), n_nonwrist_rows := 0L]
   p[is.na(n_rows), `:=`(n_rows = 0L, n_scale_rows = 0L)]
   p[is.na(n_wearable_versions), n_wearable_versions := 0L]
@@ -153,9 +163,11 @@ build_device_tables <- function(raw, persons, cfg) {
                                   n_scale_rows == n_rows, DEVICE_STATUS[["scale_only"]],
                                   n_nonwrist_rows > 0L, DEVICE_STATUS[["non_wrist"]],
                                   default = DEVICE_STATUS[["no_version"]])]
-  p[, device_missing := status != DEVICE_STATUS[["known"]]]
-  p[, device_family := fifelse(device_missing, cfg$device$missing_label, device_family_main)]
-  p[, device_family_main := NULL]
+  p[, device_missing := status %in% DEVICE_STATUS[DEVICE_MISSING_STATUS]]
+  p[, device_family := fifelse(device_missing, cfg$device$missing_label,
+                               fifelse(status == DEVICE_STATUS[["non_wrist"]], cfg$device$nonwrist_label, device_family_main))]
+  p[status == DEVICE_STATUS[["non_wrist"]], `:=`(device_version_main = device_version_nw, device_form_main = device_form_nw)]
+  p[, c("device_family_main", "device_version_nw", "device_form_nw") := NULL]
   data.table::setkey(p, person_id)
 
   tl <- unique(w[!is.na(device_date), .(person_id, device_date, device_version, device_family)])
@@ -202,11 +214,12 @@ run_etl_device <- function(cfg, out_dir, lister = gsutil_ls, reader = gsutil_fre
     persons <- readRDS(pf)
   }
   raw <- rbindlist(lapply(cfg$cohorts, function(co)
-    tryCatch(read_export_files(export_path(cfg, co, "device"), c(device_version = "character", device_type = "character"),
-                               lister = lister, reader = reader),
+    tryCatch(read_export_files(export_path(cfg, co, "device"), c(device_version = "character"), lister = lister, reader = reader),
              error = function(e) stop("device export of ", co, " not found (", conditionMessage(e),
                                       "). Run Cell 6c (run_bq_exports(cfg, final_pid, streams = \"device\")) first.", call. = FALSE))),
     use.names = TRUE, fill = TRUE)
+  if (!"device_type" %in% names(raw))
+    log_info("device: the export has no device_type column (made by an older Cell 6c); scales are recognised by their name (%s). Export again with overwrite = TRUE to add it.", cfg$device$scale_versions)
   tabs <- build_device_tables(raw, persons, cfg)
   dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
   saveRDS(tabs$person, file.path(out_dir, "device_person.rds"))
@@ -225,7 +238,7 @@ device_summary <- function(dp, persons, cfg) {
   set.seed(cfg$seed)
   ref <- cfg$reference_cohort %||% cfg$cohorts[1L]
   miss_lab <- cfg$device$missing_label
-  p <- merge(data.table::as.data.table(dp)[, .(person_id, cohort, status, device_missing, device_family, device_version_main, n_wearable_versions)],
+  p <- merge(data.table::as.data.table(dp)[, .(person_id, cohort, status, device_missing, device_family, device_version_main, device_form_main, n_wearable_versions)],
              data.table::as.data.table(persons)[, .(person_id, age_first, sex)], by = "person_id", all.x = TRUE)
   p[, cohort := factor(as.character(cohort), levels = cfg$cohorts)]
   p <- p[!is.na(cohort)]
@@ -291,7 +304,8 @@ device_summary <- function(dp, persons, cfg) {
   # ---- (d) composition of the main device family ----
   known <- p[device_missing == FALSE]
   fam_order <- known[, .N, by = device_family][order(-N), device_family]
-  fam_order <- c(setdiff(fam_order, cfg$device$other_label), intersect(fam_order, cfg$device$other_label))
+  fam_order <- c(setdiff(fam_order, c(cfg$device$other_label, cfg$device$nonwrist_label)), intersect(fam_order, cfg$device$other_label),
+                 intersect(fam_order, cfg$device$nonwrist_label))
   cats <- c(miss_lab, fam_order)
   p[, category := factor(device_family, levels = cats)]
   ct <- table(p$cohort, p$category)[lv, , drop = FALSE]
@@ -321,28 +335,38 @@ device_summary <- function(dp, persons, cfg) {
   resid[, direction := fifelse(p_holm < 0.05, fifelse(adj_residual > 0, "more than expected", "fewer than expected"), "")]
   resid <- resid[, .(cohort, category, observed, expected = round(expected, 1), adj_residual = round(adj_residual, 2), p, p_holm, direction)]
 
-  # ---- (e) full version detail, (f) people with more than one wearable version ----
-  ver <- known[, .N, by = .(cohort, device_family, device_version = device_version_main)]
-  ver[, N_known := sum(N), by = cohort]
-  vc <- wilson_ci(ver$N, ver$N_known)
+  # ---- (e) device VERSIONS within each cohort (people with a device), with a test per version and one overall ----
+  grp_of <- function(f) data.table::fcase(f == "smartwatch", "Smartwatch", f == "band", "Band", f %in% c("clip-on", "phone"), cfg$device$nonwrist_label, default = "Other")
+  kv <- known[, .(person_id, cohort, version = device_version_main, grp = grp_of(device_form_main))]
+  nver <- kv[, .N, by = .(version, grp)]
+  rare <- nver[N < (cfg$device$min_version_people %||% 10L), version]
+  kv[version %in% rare, version := paste0("Other ", tolower(grp), " versions")]
+  kv[, version := factor(version, levels = kv[, .N, by = version][order(-N), version])]
+  tabv <- table(kv$cohort, kv$version)[lv, , drop = FALSE]
+  ver <- as.data.table(as.data.frame(tabv, stringsAsFactors = FALSE)); setnames(ver, c("cohort", "device_version", "n_people"))
+  ver[, n_known := sum(n_people), by = cohort]
+  vc <- wilson_ci(ver$n_people, ver$n_known)
   ver[, `:=`(pct_of_known = 100 * vc$est, pct_low = 100 * vc$low, pct_high = 100 * vc$high)]
-  setnames(ver, "N", "n_people")
-  ver <- ver[order(match(cohort, cfg$cohorts), -n_people)]
+  ver[, group := kv$grp[match(device_version, as.character(kv$version))]]
+  ver[, `:=`(cohort = factor(cohort, levels = cfg$cohorts), device_version = factor(device_version, levels = levels(kv$version)))]
+  ver <- ver[order(cohort, device_version)]
+  vt <- rbindlist(lapply(levels(kv$version), function(v) {
+    x <- rbind(tabv[, v], rowSums(tabv) - tabv[, v])
+    cs <- suppressWarnings(stats::chisq.test(t(x), simulate.p.value = TRUE, B = cfg$device$mc_B))
+    pc <- 100 * tabv[, v] / rowSums(tabv)
+    data.table(device_version = v, group = kv$grp[match(v, as.character(kv$version))], n_people = sum(tabv[, v]),
+               pct_min = min(pc), pct_max = max(pc), cohort_highest = names(which.max(pc)), cohort_lowest = names(which.min(pc)),
+               cramers_v = cramers_v(t(x)), p_monte_carlo = cs$p.value)
+  }))
+  vt[, p_holm := stats::p.adjust(p_monte_carlo, "holm")]
+  tests <- rbind(tests, cbind(test = "Watch / device VERSION differs between cohorts, among people with a device (chi-square, cohort x version)",
+                              chisq_table(tabv, cfg$device$mc_B, cfg$device$boot_B)), fill = TRUE)
+  tests[, p_monte_carlo_holm := stats::p.adjust(p_monte_carlo, "holm")]
   sw <- known[, .(n_known = .N, n_two_or_more = sum(n_wearable_versions >= 2L)), by = cohort][order(match(cohort, cfg$cohorts))]
   sc <- wilson_ci(sw$n_two_or_more, sw$n_known)
   sw[, `:=`(pct_two_or_more = 100 * sc$est, pct_low = 100 * sc$low, pct_high = 100 * sc$high)]
 
-  # the same cohort x category table read the other way: the cohort mix of each category (column percentages), with the mix of all people on top
-  mix <- as.data.table(as.data.frame(ct, stringsAsFactors = FALSE)); setnames(mix, c("cohort", "category", "n"))
-  tot <- mix[, .(n = sum(n)), by = cohort][, category := "All people"]
-  mix <- rbind(tot, mix)
-  mix[, n_category := sum(n), by = category]
-  mxc <- wilson_ci(mix$n, mix$n_category)
-  mix[, `:=`(pct_of_category = 100 * mxc$est, pct_low = 100 * mxc$low, pct_high = 100 * mxc$high)]
-  mix[, `:=`(cohort = factor(cohort, levels = cfg$cohorts), category = factor(category, levels = c("All people", cats)))]
-  mix <- mix[order(category, cohort)]
-
-  list(device_missing_by_cohort = mb[], device_missing_vs_reference = pair[], device_missing_model = model, device_cohort_mix = mix[],
+  list(device_missing_by_cohort = mb[], device_missing_vs_reference = pair[], device_missing_model = model,
        device_composition_by_cohort = comp[], device_composition_residuals = resid[], device_tests = tests[],
-       device_version_by_cohort = ver[], device_switching_by_cohort = sw[])
+       device_version_by_cohort = ver[], device_version_tests = vt[], device_switching_by_cohort = sw[])
 }
