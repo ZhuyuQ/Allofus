@@ -106,13 +106,16 @@ stream_inputs <- function(store, stream, cfg, extra_cols = character()) {
   out
 }
 
-# stages: any of "missingness", "temporal", "descriptive", "wear_consistency", "onset", "gap_models", "sensitivity",
-#   "wear_strata", "missing_figures", "device"
+# stages: any of "missingness", "temporal", "descriptive", "runin_description", "onset", "gap_models", "sensitivity",
+#   "runin", "runin_sensitivity", "missing_figures", "device"
 #   "variables"        = person-level % of days missing against every model variable (cohort, sex, watch version, age, between-person
 #                        predictor levels): figures outcome_by_variable_*, tables outcome_variable_*. Needs Cell 8b for the watch version.
 #   "device"           = missing share and composition of the Fitbit device version by cohort (needs Cells 6c and 8b); no model.
-#   "wear_consistency" = the descriptive characterization of wear consistency (coverage, strata, composition); no model.
-#   "wear_strata"      = that characterization first, then the primary models (onset, B, C) within each stratum.
+#   "runin_description" = the run-in (first cfg$runin$days days of follow-up): distribution of missing days, the observed gap rate after
+#                        the run-in by run-in group (H1), and the steps-gap curve by run-in group (H2); no model.
+#   "runin"            = that description first, then the primary onset model and models B and C on the days / gaps AFTER the run-in,
+#                        without a run-in term and with the run-in and its interaction (see runin.R).
+#   "runin_sensitivity" = everything of "runin", plus the other forms of the run-in (main effect only, categories, linear), with figures of their own.
 #   "missing_figures" = only the figures / tables of the missingness summaries that are built from person-level
 #   counts (missing % by race / sex / CCI / age group, missing share by study week / year / weekday / age): no
 #   model, no heatmaps, no descriptive metrics - a quick way to redraw them.
@@ -134,7 +137,7 @@ run_missingness_pipeline <- function(day_tables, persons, cfg, outdir,
   if (!is.null(dp_store))
     persons <- data.table::setkey(merge(data.table::as.data.table(persons), data.table::as.data.table(dp_store)[, .(person_id, device_family)],
                                         by = "person_id", all.x = TRUE, sort = FALSE), person_id)
-  if (any(c("onset", "gap_models", "sensitivity", "wear_strata") %in% stages) && isTRUE(cfg$model$adjust_device) && !"device_family" %in% names(persons))
+  if (any(c("onset", "gap_models", "sensitivity", "runin", "runin_sensitivity") %in% stages) && isTRUE(cfg$model$adjust_device) && !"device_family" %in% names(persons))
     stop("the models use the device family as a covariate but no device information is in L1: run Cell 6c (export) and Cell 8b (run_etl_device) first, ",
          "or set cfg$model$adjust_device <- FALSE", call. = FALSE)
   if ("device_family" %in% names(persons)) cfg$device$reference_used <- device_reference(persons, cfg)
@@ -389,80 +392,87 @@ run_missingness_pipeline <- function(day_tables, persons, cfg, outdir,
     res$outcome_variable_by_cohort  <- rbindlist(lapply(ovs, `[[`, "by_cohort"), fill = TRUE)
   }
 
-  # ---- 7b. wear consistency: characterization (descriptive) and, for "wear_strata", the models within each stratum ----
-  if (has("wear_consistency") || has("wear_strata")) {
-    wc <- list(); map_l <- list()
-    for (s in model_streams) {
-      d <- store$get(s, cols = character())
-      pg <- summarise_person_gaps(d, get_gap_runs(d)); rm(d)
-      cls <- classify_wear_consistency(wear_coverage_table(pg), cfg); map_l[[s]] <- cls
-      wc[[s]] <- wear_consistency_describe(cls, persons, s, cfg)
-    }
-    res$wear_consistency_classification <- rbindlist(lapply(wc, `[[`, "classification"))
-    res$wear_consistency_descriptive    <- rbindlist(lapply(wc, `[[`, "summary"), fill = TRUE)
-    res$wear_consistency_composition    <- rbindlist(lapply(wc, `[[`, "composition"))
-    res$wear_consistency_by_person      <- rbindlist(lapply(wc, `[[`, "by_person"))
-    fig("wear_consistency_distribution", plot_wear_distribution(res$wear_consistency_by_person, res$wear_consistency_classification, cfg), 9, 9)
-    fig("wear_consistency_composition", plot_wear_composition(res$wear_consistency_composition, cfg), 9, 5)
-    early_tables <- c("wear_consistency_classification", "wear_consistency_descriptive", "wear_consistency_composition", "wear_consistency_by_person")
-    write_tables(res[early_tables], outdir)       # the criteria are on disk BEFORE any stratified model is fitted (and not rewritten afterwards)
-  }
-  if (has("wear_strata")) {
+  # ---- 7b. run-in analysis (its own stages, tables and figures, apart from the main analysis) ----
+  #   runin_description : no model.   runin : + the primary models (without a run-in term / with the run-in and its interaction), after the run-in.
+  #   runin_sensitivity : + the other forms of the run-in (main effect only, categories, linear) with their own figures.
+  if (has("runin_description") || has("runin") || has("runin_sensitivity")) {
+    with_models <- has("runin") || has("runin_sensitivity"); with_sens <- has("runin_sensitivity")
     for (s in model_streams) {
       inputs <- lazy(function() stream_inputs(store, s, cfg))
       bundle <- lazy(function() prepare_stream_bundle(s, inputs$get(), persons, cfg))
       act_col <- cfg$predictors[["act_steps"]]$col
-      gap_data <- lazy(function() {
+      gap_data <- if (with_models) lazy(function() {
         days <- store$get(s, cols = if (s == "activity") act_col else character())
         act  <- if (s == "activity") days else store$get("activity", cols = act_col)
         build_gap_level_data(days, act, persons, cfg)
       })
-      units[[paste0("wear_strata:", s)]] <- run_wear_stage(s, bundle, gap_data, grid = make_onset_grid(cfg), map_l[[s]], cfg, ckpt, dkeys[[s]])
-      bundle$release(); inputs$release(); gap_data$release()
+      units[[paste0("runin:", s)]] <- run_runin_stage(s, bundle, gap_data, grid = make_onset_grid(cfg), cfg, ckpt, dkeys[[s]], with_models = with_models, sensitivity = with_sens)
+      bundle$release(); inputs$release(); if (!is.null(gap_data)) gap_data$release()
     }
-    res <- c(res, collect_wear_results(ckpt, cfg, dkeys))
-    res$wear_strata_quality <- wear_strata_quality(res, cfg)
-    fig("wear_strata_primary_effect", plot_wear_primary_effect(res$wear_strata_comparison, cfg), 11, 6)
-    sg <- c(Consistent = "Consistent wear", Inconsistent = "Inconsistent wear")
-    for (s in model_streams) {
-      p <- if (nrow(res$wear_strata_onset_coefficients) > 0L)
-        plot_effects_by_group(res$wear_strata_onset_coefficients[role == "primary"], s, cfg, "wear_stratum", sg, "other",
-                              paste0("Onset Model by Wear Consistency: All Terms (", nice_label(s), " Stream)"), subtitle_or(cfg)) else NULL
-      if (!is.null(p)) fig(paste0("wear_strata_onset_all_terms_other_", s), p)
-      if (nrow(res$wear_strata_gapB_all_terms) > 0L) {
-        p <- plot_effects_by_group(res$wear_strata_gapB_all_terms, s, cfg, "wear_stratum", sg, "other",
-                                   paste0("Model B by Wear Consistency: All Terms (", nice_label(s), " Stream)"),
-                                   paste0("Change in activity on the first full day back (SD of the person's usual): per doubling of the gap. ", covariate_note(cfg)), measure = "estimate")
-        if (!is.null(p)) fig(paste0("wear_strata_gapB_all_terms_", s), p)
+    res <- c(res, collect_runin_results(ckpt, cfg, dkeys))
+    res$runin_collinearity <- build_runin_collinearity(res)
+    res$runin_term_tests   <- build_runin_term_tests(res)
+    fig("runin_distribution", plot_runin_distribution(res$runin_distribution, cfg), 10, 7)
+    fig("runin_rate_by_category", plot_runin_rate(res$runin_rate, res$runin_association, cfg), 11, 7)
+    for (s in model_streams) fig(paste0("runin_steps_by_group_", s), plot_runin_steps_by_group(res$runin_steps_by_group, s, cfg), 12, 6)
+    if (with_models) {
+      # primary: the model without a run-in term and the model with the run-in and its interaction
+      gl_prim <- stats::setNames(RUNIN_LABELS[RUNIN_PRIMARY_VARIANTS], RUNIN_PRIMARY_VARIANTS)
+      fig("runin_primary_effect", plot_runin_primary_effect(res$runin_primary_effect, res$runin_tests, cfg), 11, 6)
+      fig("runin_steps_by_missing_days", plot_runin_steps_by_missing(res$runin_effect_by_missing, res$runin_tests, cfg), 11, 7)
+      forests <- function(prefix, groups_on, groups_gap, ttl) for (s in model_streams) {
+        p <- if (nz(res$runin_onset_coefficients))
+          plot_effects_by_group(res$runin_onset_coefficients, s, cfg, "runin_variant", groups_on, "other",
+                                paste0("Onset Model After the Run-in", ttl, ": All Terms (", nice_label(s), " Stream)"), subtitle_runin(cfg)) else NULL
+        if (!is.null(p)) fig(paste0(prefix, "onset_all_terms_other_", s), p)
+        if (nz(res$runin_gapB_all_terms)) {
+          p <- plot_effects_by_group(res$runin_gapB_all_terms, s, cfg, "runin_variant", groups_gap, "other",
+                                     paste0("Model B After the Run-in", ttl, ": All Terms (", nice_label(s), " Stream)"),
+                                     ov_wrap(paste0("Change in activity on the first full day back (SD of the person's usual): per doubling of the gap. ", covariate_note(cfg)), 100), measure = "estimate")
+          if (!is.null(p)) fig(paste0(prefix, "gapB_all_terms_", s), p)
+        }
+        if (nz(res$runin_gapC_all_terms)) {
+          p <- plot_effects_by_group(res$runin_gapC_all_terms, s, cfg, "runin_variant", groups_gap, "other",
+                                     paste0("Model C After the Run-in", ttl, ": All Terms (", nice_label(s), " Stream)"),
+                                     ov_wrap(paste0("Odds of a longer gap (ordinal model): steps before the gap per +1 SD. ", covariate_note(cfg)), 100))
+          if (!is.null(p)) fig(paste0(prefix, "gapC_all_terms_", s), p)
+        }
       }
-      if (nrow(res$wear_strata_gapC_all_terms) > 0L) {
-        p <- plot_effects_by_group(res$wear_strata_gapC_all_terms, s, cfg, "wear_stratum", sg, "other",
-                                   paste0("Model C by Wear Consistency: All Terms (", nice_label(s), " Stream)"),
-                                   paste0("Odds of a longer gap (ordinal model): steps before the gap per +1 SD. ", covariate_note(cfg)))
-        if (!is.null(p)) fig(paste0("wear_strata_gapC_all_terms_", s), p)
-      }
+      forests("runin_", gl_prim, gl_prim, "")
+      # one GVIF figure per run-in model (the model with the run-in and its interaction)
+      cfr <- if (nz(res$runin_collinearity)) res$runin_collinearity[figure == TRUE] else NULL
+      if (nz(cfr)) for (s in model_streams) for (id in unique(cfr[stream == s, figure_id]))
+        fig(paste0("runin_gvif_", id, "_", s), plot_collinearity(cfr[figure_id == id], s, cfg), 9, 2.6 + 0.24 * uniqueN(cfr[stream == s & figure_id == id, term]))
+    }
+    if (with_sens) {
+      # sensitivity: every other form of the run-in, in figures of their own
+      fig("runin_sensitivity_primary_effect", plot_runin_primary_effect(res$runin_primary_effect, res$runin_tests, cfg, variants = RUNIN_ONSET_VARIANTS, sensitivity = TRUE), 11, 7)
+      fig("runin_sensitivity_shape", plot_runin_shape(res$runin_onset_coefficients, res$runin_onset_models, res$runin_distribution, res$runin_shape, cfg), 11, 6)
+      gl_all <- stats::setNames(RUNIN_LABELS[RUNIN_ONSET_VARIANTS], RUNIN_ONSET_VARIANTS); gl_gap <- gl_all[RUNIN_GAP_VARIANTS]
+      forests("runin_sensitivity_", gl_all, gl_gap, " (Sensitivity)")
     }
   }
 
-  # ---- 7c. multicollinearity of every fitted model (GVIF) and the joint term tests ----
-  if (any(c("onset", "gap_models", "sensitivity", "wear_strata") %in% stages)) {
+  # ---- 7c. multicollinearity of every fitted model of the main analysis (GVIF, one figure per model) and the joint term tests ----
+  if (any(c("onset", "gap_models", "sensitivity") %in% stages)) {
     if (is.null(res$onset_collinearity))       res <- c(res, collect_onset_results(ckpt, cfg, dkeys))
     if (is.null(res$sensitivity_collinearity)) res <- c(res, collect_sensitivity_results(ckpt, cfg, dkeys))
     if (is.null(res$gap_collinearity))         res <- c(res, collect_gap_results(ckpt, cfg, dkeys))
-    if (is.null(res$wear_strata_onset_collinearity)) res <- c(res, collect_wear_results(ckpt, cfg, dkeys))
     res$model_collinearity <- build_collinearity_table(res)
     res$model_term_tests   <- build_term_test_table(res)
     cf <- collinearity_for_figure(res$model_collinearity)
-    for (s in model_streams) {
-      p <- if (nz(cf)) plot_collinearity(cf, s, cfg) else NULL
-      if (!is.null(p)) fig(paste0("collinearity_gvif_", s), p, 9, 3 + 2.2 * uniqueN(cf[stream == s, analysis]))
+    if (nz(cf)) for (s in model_streams) for (id in unique(cf[stream == s, figure_id])) {
+      d <- cf[stream == s & figure_id == id]
+      fig(paste0("collinearity_gvif_", id, "_", s), plot_collinearity(d, s, cfg), 9, 2.6 + 0.24 * uniqueN(d$term))
     }
   }
 
   # ---- 8. write everything, and say plainly what ran, what was resumed and what failed ----
   res$unit_run_status  <- unit_status_table(units)
   res$checkpoint_status <- checkpoint_report(ckpt, cfg, dkeys)
-  res$unit_failures <- rbindlist(list(res$onset_failures, res$sensitivity_failures, res$gap_failures, res$wear_failures), fill = TRUE)
+  res$unit_failures <- rbindlist(list(res$onset_failures, res$sensitivity_failures, res$gap_failures, res$runin_failures), fill = TRUE)
+  if (nrow(res$unit_failures) > 0L && "stream" %in% names(res$unit_failures))      # only the streams of THIS run: an earlier failure of another stream is retried when that stream is run
+    res$unit_failures <- res$unit_failures[stream %in% model_streams]
   if (!is.null(res$unit_failures) && nrow(res$unit_failures) > 0L) {
     warning(sprintf("%d model unit(s) FAILED - see unit_failures.tsv; run the same cell again to retry them.", nrow(res$unit_failures)), call. = FALSE)
     print(res$unit_failures)
@@ -470,7 +480,7 @@ run_missingness_pipeline <- function(day_tables, persons, cfg, outdir,
   write_tables(res[setdiff(names(res), early_tables)], outdir)
   write_table_index(outdir)                       # tables/table_index.tsv: each table with its analysis step
   if (length(figs)) write_figure_captions(figs, outdir, cfg)
-  if (any(c("onset", "gap_models", "sensitivity", "wear_strata") %in% stages)) write_results_summary(res, cfg, outdir)   # model results only
+  if (any(c("onset", "gap_models", "sensitivity", "runin", "runin_sensitivity") %in% stages)) write_results_summary(res, cfg, outdir)   # model results only
   if (!identical(stages, "missing_figures")) write_run_metadata(cfg, outdir, store, extra = list(stages = stages, onset_roles = onset_roles))
   invisible(res)
 }

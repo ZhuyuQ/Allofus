@@ -141,18 +141,26 @@ Run only if proportional odds is not rejected (LRT of the same model without ran
 longer gap per +1 SD higher than usual activity. If the random-intercept variance is on the boundary: the same cumulative-logit model without `u_i` and person-clustered bootstrap SEs.
 (`cohort`, `age10`, `sex2` are dropped where constant.)
 
-## 4. The same models within strata of wear consistency (stage `wear_strata`)
+## 4. The run-in analysis (stages `runin` = primary, `runin_sensitivity`): the same models on the days / gaps AFTER the first N = 28 days
 
-**Stratum**: `coverage = observed days / (last - first + 1)` in the modelled stream; `Consistent` if `coverage >= median(coverage)` (default; `cfg$wear`), else `Inconsistent`.
-**Models** (formulas as above, fitted separately on the people of one stratum; `cohort`, `age10`, `sex2` dropped where constant):
+**Run-in measure** (per person and stream; `runin.R`): `m = N - (observed days among study days 1..N)`, NA if the follow-up is shorter than N days.
+`cov0 = log2(1 + m) - mean over the people analysed`  (per doubling of 1 + m);  `cov0_cat` in {0, 1, 2-3, >=4} (reference 0);  `cov0_lin = 100 m / N / 10` centred.
+**Rows**: onset: prior days with `study_day > N`; models B and C: gaps whose last observed day before the gap has `study_day > N`. Identical rows in every variant.
 
-    onset  : y_ge1 ~ <primary joint adjusted formula>                       within stratum s in {Consistent, Inconsistent}
-    model B: back2_dev ~ log2_gap + cohort + age10 + sex2 + (1 | person_id) within stratum s
-    model C: ordinal cumulative logit as above, C_adj                        within stratum s
-    test of the difference, onset (pooled people):  y_ge1 ~ <primary formula> + stratum + w_act_steps:stratum + (1 | person_id)  vs the same without the interaction (LRT, 1 df)
-    test of the difference, models B and C: z = (b_Inconsistent - b_Consistent) / sqrt(se_C^2 + se_I^2)   (independent estimates; strata hold different people)
+    PRIMARY (stage runin):
+    onset, reference           : y_ge1 ~ <primary joint adjusted formula>                                  + (1 | person_id)
+    onset, interaction         : ... + cov0 + w_act_steps:cov0                                             + (1 | person_id)      H1: coefficient of cov0, H2: coefficient of w_act_steps:cov0 (Wald)
+    SENSITIVITY (stage runin_sensitivity):
+    onset, main                : ... + cov0                                                                + (1 | person_id)      H1: coefficient of cov0
+    (H2 sensitivity: LRT of the interaction model vs the main-effect model, 1 df)
+    onset, categorical         : ... + cov0_cat                                                            + (1 | person_id)      shape check (AIC; LRT vs reference, 3 df)
+    onset, linear_interaction  : ... + cov0_lin + w_act_steps:cov0_lin                                     + (1 | person_id)      functional-form sensitivity
+    model B  (reference | main | interaction): back2_dev ~ log2_gap [+ cov0 [+ log2_gap:cov0]] + cohort + age10 + sex2 + device + cci + cci_missing + (1 | person_id)
+    model C  (reference | main | interaction): ordinal cumulative logit, length group ~ w_pre_day_steps [+ cov0 [+ w_pre_day_steps:cov0]] + covariates + (1 | person_id)
 
-Effect sizes: onset and C: `OR = exp(beta)` per +1 SD higher prior-day steps and the **ratio of odds ratios** `exp(b_I - b_C)`; B: change in activity (SD) per doubling of the gap and its difference.
+Effect of the key term at `m` missing days (interaction variants): `b_key + b_int (log2(1 + m) - centre)`, variance `v_key + L^2 v_int + 2 L cov(b_key, b_int)`, `L = log2(1 + m) - centre`.
+Onset and C: `OR = exp(beta)`; B: change in activity (SD of the person's usual steps) per doubling of the gap. Hypotheses H1 (`cov0`), H2 (key term x `cov0`, Holm over the streams), H3 (primary
+estimate with and without the run-in terms): STATISTICS.md section 10.
 
 ## 5. Diagnostics
 

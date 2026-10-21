@@ -17,8 +17,9 @@
 # Interpretation: a high VIF inflates the standard error of that term by sqrt(VIF) (e.g. 5 -> 2.2 times) and makes its
 # estimate unstable against small changes of the data; it does NOT bias the other coefficients or the model's predictions,
 # and nothing is removed or re-specified because of it. Terms of an interaction would be collinear with their main effects by
-# construction; the interaction models of this pipeline (cohort / wear-stratum x effect) are only used for likelihood-ratio
-# tests, so the diagnostic is reported for the main-effects model.
+# construction; the cohort-interaction models of this pipeline are only used for likelihood-ratio tests, so the diagnostic is reported for
+# the main-effects model. The run-in interaction models are reported too: run-in is centred, so its product with the steps term is nearly
+# uncorrelated with both.
 # ==============================================================================
 
 VIF_HIGH   <- 5
@@ -96,6 +97,9 @@ tag_diagnostics <- function(tab, ...) {
 
 nz <- function(x) !is.null(x) && is.data.frame(x) && nrow(x) > 0L
 
+# Readable name of a run-in model (panel title of the collinearity figure).
+runin_analysis_label <- function(variant, what) paste0("Run-in analysis (", RUNIN_LABELS[as.character(variant)], "): ", what)
+
 # Readable name of an onset specification (also the panel title of the collinearity figure).
 onset_analysis_label <- function(role, set_name, k, adjusted) {
   fifelse(role == "primary", "Primary onset model (gap >= 1 day)",
@@ -103,8 +107,8 @@ onset_analysis_label <- function(role, set_name, k, adjusted) {
                   sprintf("Exploratory onset: %s, %s", spec_set_label(set_name), fifelse(adjusted, "adjusted", "unadjusted"))))
 }
 
-# All GVIF results of all fitted models in one table (long format), with a readable `analysis` and `figure = TRUE` for
-# the models drawn in collinearity_gvif_<stream> (primary onset, full-period standardization, models B and C, the two wear strata).
+# All GVIF results of all fitted models of the MAIN analysis in one table (long format), with a readable `analysis`, and `figure = TRUE` + `figure_id` for the
+# models that get a figure of their own, collinearity_gvif_<figure_id>_<stream> (primary onset, full-period standardization, models B and C).
 build_collinearity_table <- function(res) {
   keep <- c("stream", "model_family", "analysis", "stratum", "term", "df", "gvif", "gvif_adj", "vif_equiv", "flag")
   parts <- list()
@@ -120,20 +124,35 @@ build_collinearity_table <- function(res) {
     g <- res$gap_collinearity
     parts[[3L]] <- g[, .(stream, model_family = paste("model", model), analysis = paste0("Model ", model, ": ", model_id), stratum = "all", term, df, gvif, gvif_adj, vif_equiv, flag)]
   }
-  if (nz(res$wear_strata_onset_collinearity)) {
-    w <- res$wear_strata_onset_collinearity
-    parts[[4L]] <- w[, .(stream, model_family = "gap onset (wear strata)", analysis = paste0("Wear consistency (", wear_stratum, "): ", onset_analysis_label(role, set_name, k, adjusted)), stratum = wear_stratum, term, df, gvif, gvif_adj, vif_equiv, flag)]
+  out <- rbindlist(parts, fill = TRUE)
+  if (nrow(out) == 0L) return(out)
+  ids <- c("Primary onset model (gap >= 1 day)" = "onset_primary", "Sensitivity: Full Period Standardization" = "onset_full_period",
+           "Model B: B_back2_adj_pre" = "model_B", "Model C: C_adj" = "model_C")
+  out[, figure_id := unname(ids[analysis])]
+  out[, figure := !is.na(figure_id)]
+  setcolorder(out, c(keep, "figure", "figure_id"))
+  out[]
+}
+
+# The same for the run-in analysis, kept apart from the main diagnostics (its own tables and figures). Every variant is listed; the models with the run-in
+# and its interaction (the primary run-in analysis) are drawn, one figure per model.
+build_runin_collinearity <- function(res) {
+  keep <- c("stream", "model_family", "analysis", "variant", "term", "df", "gvif", "gvif_adj", "vif_equiv", "flag")
+  parts <- list()
+  if (nz(res$runin_onset_collinearity)) {
+    w <- res$runin_onset_collinearity
+    parts[[1L]] <- w[, .(stream, model_family = "gap onset", analysis = runin_analysis_label(runin_variant, "primary onset model"), variant = runin_variant, term, df, gvif, gvif_adj, vif_equiv, flag,
+                         figure_id = fifelse(runin_variant == "interaction", "onset", NA_character_))]
   }
-  if (nz(res$wear_strata_gap_collinearity)) {
-    w <- res$wear_strata_gap_collinearity
-    parts[[5L]] <- w[, .(stream, model_family = paste("model", model, "(wear strata)"), analysis = paste0("Wear consistency (", wear_stratum, "): model ", model, " ", model_id), stratum = wear_stratum, term, df, gvif, gvif_adj, vif_equiv, flag)]
+  if (nz(res$runin_gap_collinearity)) {
+    w <- res$runin_gap_collinearity
+    parts[[2L]] <- w[, .(stream, model_family = paste("model", model), analysis = runin_analysis_label(runin_variant, paste("model", model, model_id)), variant = runin_variant, term, df, gvif, gvif_adj, vif_equiv, flag,
+                         figure_id = fifelse(runin_variant == "interaction", paste0("model_", model), NA_character_))]
   }
   out <- rbindlist(parts, fill = TRUE)
   if (nrow(out) == 0L) return(out)
-  out[, figure := analysis %in% c("Primary onset model (gap >= 1 day)", "Sensitivity: Full Period Standardization", "Model B: B_back2_adj_pre",
-                                  "Model C: C_adj", "Wear consistency (Consistent): Primary onset model (gap >= 1 day)",
-                                  "Wear consistency (Inconsistent): Primary onset model (gap >= 1 day)")]
-  setcolorder(out, c(keep, "figure"))
+  out[, figure := !is.na(figure_id)]
+  setcolorder(out, c(keep, "figure", "figure_id"))
   out[]
 }
 
@@ -150,9 +169,19 @@ build_term_test_table <- function(res) {
     g <- res$gap_term_tests
     parts[[2L]] <- g[, .(stream, model_family = paste("model", model), analysis = paste0("Model ", model, ": ", model_id), stratum = "all", term, df, chisq, p)]
   }
-  if (nz(res$wear_strata_onset_term_tests)) {
-    w <- res$wear_strata_onset_term_tests
-    parts[[3L]] <- w[, .(stream, model_family = "gap onset (wear strata)", analysis = paste0("Wear consistency (", wear_stratum, "): ", onset_analysis_label(role, set_name, k, adjusted)), stratum = wear_stratum, term, df, chisq, p)]
+  rbindlist(parts, fill = TRUE)
+}
+
+# The joint Wald tests of the run-in models, apart from the main tests.
+build_runin_term_tests <- function(res) {
+  parts <- list()
+  if (nz(res$runin_onset_term_tests)) {
+    w <- res$runin_onset_term_tests
+    parts[[1L]] <- w[, .(stream, model_family = "gap onset", analysis = runin_analysis_label(runin_variant, "primary onset model"), variant = runin_variant, term, df, chisq, p)]
+  }
+  if (nz(res$runin_gap_term_tests)) {
+    w <- res$runin_gap_term_tests
+    parts[[2L]] <- w[, .(stream, model_family = paste("model", model), analysis = runin_analysis_label(runin_variant, paste("model", model, model_id)), variant = runin_variant, term, df, chisq, p)]
   }
   rbindlist(parts, fill = TRUE)
 }

@@ -269,12 +269,12 @@ ckpt_cfg_part <- function(cfg, kind) {
   core$covariates <- c(cfg$model[c("adjust_cci", "adjust_device")], list(device = cfg$device[c("forms", "wrist_forms", "families", "other_label", "nonwrist_label", "scale_types", "scale_versions", "min_family_people", "reference")], covariates_version = 1L))   # the covariate set is part of every key
   core$analysis_version <- 5L
   model_part <- cfg$model[c("engine", "nAGQ", "min_events", "min_persons_with_events", "adjust_cci", "adjust_device")]
-  if (kind %in% c("gapB", "gapC", "wear_gapB", "wear_gapC"))
-    return(c(core, list(gap_models = cfg$gap_models, boot = cfg$boot, predict = cfg$predict, kind = kind,
-                        wear = if (startsWith(kind, "wear")) cfg$wear[c("method", "threshold")])))
+  runin_part <- if (startsWith(kind, "runin")) cfg$runin[c("days", "cat_breaks")]       # the run-in definition is part of every run-in result
+  if (kind %in% c("gapB", "gapC", "runin_gapB", "runin_gapC"))
+    return(c(core, list(gap_models = cfg$gap_models, boot = cfg$boot, predict = cfg$predict, kind = kind), if (!is.null(runin_part)) list(runin = runin_part)))
   extra <- list(onset = cfg$onset, model = model_part, primary_term = cfg$primary_term, kind = kind)
   if (kind == "sensitivity") extra$boot <- cfg$boot
-  if (startsWith(kind, "wear")) extra$wear <- cfg$wear[c("method", "threshold")]    # the classification rule is part of every stratified result
+  if (!is.null(runin_part)) extra$runin <- runin_part
   c(core, extra)
 }
 

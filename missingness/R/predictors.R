@@ -136,7 +136,7 @@ partial_wear_flag <- function(days, rule) {
 #   gaps   : one row per gap
 #   rs     : the risk set (one row per observed day except the last) with outcomes,
 #            history, calendar variables, own predictors, activity predictors,
-#            partial-wear flags and person covariates
+#            partial-wear flags, person covariates and the person's missing days in the run-in
 #   scales : within/between SDs used for scaling
 #
 # `observed_filter` (optional, e.g. "has_main_sleep") restricts which sleep/hr/activity
@@ -182,6 +182,7 @@ prepare_stream_bundle <- function(stream, day_tables, persons, cfg, observed_fil
   # person covariates
   cov <- person_covariates(persons, cfg)                 # cohort, age10, sex2, CCI and device family (covariates.R)
   add_columns(cov, "person_id")
+  add_columns(runin_person_table(days, cfg$runin$days)[, .(person_id, runin_missing)], "person_id")      # missing days in the first days of follow-up (runin.R); only the run-in models use it
   setkey(rs, person_id, date)
 
   list(stream = stream, gaps = gaps, rs = rs, scales = scales,

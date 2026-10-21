@@ -89,8 +89,9 @@ build_onset_formula <- function(preds, adjusted, k, baseline = "whole", drop_col
 #   drop_partial  TRUE -> drop days flagged as partial wear (own stream or activity)
 #   first_gap     TRUE -> keep only days up to each person's first gap onset
 #   cohort        a cohort label -> fit within that cohort only
-#   strata        data.table(person_id, stratum): keep only the people listed and add the column `stratum` (a factor)
-#   stratum       one level of `strata` -> fit within that stratum only (e.g. consistent / inconsistent wear)
+#   runin_days    N -> the run-in analysis (runin.R): only prior days AFTER the first N days of follow-up (study_day > N) of people with
+#                 a complete run-in; adds cov0 (log2(1 + missing days in the run-in), centred), cov0_lin and cov0_cat
+#   runin_terms   which run-in terms the formula gets: "reference" | "main" | "interaction" | "categorical" | "linear_interaction"
 build_onset_data <- function(bundle, spec, cfg, variant = list()) {
   baseline <- variant$baseline %||% "whole"
   pre   <- if (baseline == "trailing") "tw_" else "w_"
@@ -111,11 +112,7 @@ build_onset_data <- function(bundle, spec, cfg, variant = list()) {
   if (isTRUE(variant$first_gap)) keep <- keep & first_gap_rows(rs)
   if (!is.null(variant$cohort))  keep <- keep & (rs$cohort == variant$cohort)
   if (isTRUE(variant$drop_partial)) keep <- keep & !(rs$pw_own %in% TRUE) & !(rs$pw_act %in% TRUE)
-  if (!is.null(variant$strata)) {
-    st <- variant$strata$stratum[match(rs$person_id, variant$strata$person_id)]
-    keep <- keep & !is.na(st)
-    if (!is.null(variant$stratum)) keep <- keep & (as.character(st) == variant$stratum)
-  }
+  if (!is.null(variant$runin_days)) keep <- keep & (rs$study_day > variant$runin_days) & !is.na(rs$runin_missing)     # only days AFTER the run-in
 
   # only the columns this model uses (the bundle has ~30; copying all of them dominated memory)
   # CCI variant (sensitivity): "score" (default, per +1 point + missing flag), "none", "groups" (cci_grp), "within_cohort" (score minus the cohort mean)
@@ -124,12 +121,8 @@ build_onset_data <- function(bundle, spec, cfg, variant = list()) {
                 switch(cci_mode, score = c("cci", "cci_missing"), none = character(), groups = "cci_grp", within_cohort = c("cci_wc", "cci_missing")))
   adj_cols <- intersect(adj_cols, names(rs))                               # device / cci columns exist only when cfg$model switches them on
   out_cols <- unique(c("person_id", ycol, paste0(pre, preds), paste0("b_", preds),
-                       if (spec$adjusted) adj_cols))
+                       if (spec$adjusted) adj_cols, if (!is.null(variant$runin_days)) "runin_missing"))
   out <- rs[keep, ..out_cols]
-  if (!is.null(variant$strata)) {
-    lv <- levels(factor(variant$strata$stratum))
-    out[, stratum := factor(as.character(variant$strata$stratum[match(person_id, variant$strata$person_id)]), levels = lv)]
-  }
 
   if (!is.null(cfg$model$sample_persons)) {
     ids <- sample_person_ids(out$person_id, cfg$model$sample_persons, cfg$seed)
@@ -141,6 +134,7 @@ build_onset_data <- function(bundle, spec, cfg, variant = list()) {
     out[, c("prev_gap_len", "days_since_return") := NULL]
     if (cci_mode == "within_cohort") { out[, cci := cci_wc]; out[, cci_wc := NULL] }
   }
+  if (!is.null(variant$runin_days)) add_runin_columns(out, variant$runin_days, cfg)     # after the person sample, so the centring refers to the people analysed
   attr(out, "ycol") <- ycol
   out[]
 }
@@ -241,18 +235,20 @@ fit_onset_spec_inner <- function(bundle, spec, cfg, variant = list(), keep_fit =
     spec_id = spec$spec_id %||% NA_character_, stream = spec$stream, set_name = spec$set_name,
     k = spec$k, adjusted = spec$adjusted, role = spec$role %||% NA_character_,
     baseline = variant$baseline %||% "whole", cohort_stratum = variant$cohort %||% "all",
-    wear_stratum = variant$stratum %||% "all", standardization = bundle$standardization %||% cfg$standardization$method,
+    standardization = bundle$standardization %||% cfg$standardization$method,
     n_rows = ec$n_rows, n_persons = ec$n_persons, n_events = ec$n_events,
     n_persons_event = ec$n_persons_event)
+  if (!is.null(variant$runin_days)) meta[, `:=`(runin_variant = variant$runin_terms %||% "reference", runin_days = variant$runin_days)]
 
   if (!enough_events(ec, cfg)) {
     return(list(coef = NULL, info = cbind(meta, status = "not_estimable", sigma2 = NA_real_,
                                           mor = NA_real_, note = "too few events"), fit = NULL))
   }
   drop_cols <- constant_adjuster_cols(dat, spec$adjusted)
+  extra <- c(if (spec$adjusted && identical(variant$cci_mode, "groups") && "cci_grp" %in% names(dat) && uniqueN(dat$cci_grp) > 1L) "cci_grp",
+             if (!is.null(variant$runin_days)) runin_formula_terms(variant$runin_terms %||% "reference", cfg$primary_term, dat))
   ftxt <- build_onset_formula(spec$predictors[[1L]], spec$adjusted, spec$k,
-                              baseline = variant$baseline %||% "whole", drop_cols = drop_cols,
-                              extra_terms = if (spec$adjusted && identical(variant$cci_mode, "groups") && "cci_grp" %in% names(dat) && uniqueN(dat$cci_grp) > 1L) "cci_grp" else character())
+                              baseline = variant$baseline %||% "whole", drop_cols = drop_cols, extra_terms = extra)
 
   notes <- character()
   fit <- tryCatch(
@@ -278,8 +274,9 @@ fit_onset_spec_inner <- function(bundle, spec, cfg, variant = list(), keep_fit =
                 note = paste(c(if (isTRUE(sing)) "singular fit (person variance ~ 0)", utils::head(unique(notes), 3L)), collapse = " | "))
   # multicollinearity (GVIF per term) and joint Wald tests per term, from the fixed-effect covariance of this very fit
   dg <- tryCatch(fixed_effect_diagnostics(stats::setNames(coef$estimate, coef$term), V, ftxt), error = function(e) NULL)
-  id_cols <- meta[1L, .(spec_id, stream, set_name, k, adjusted, role, baseline, cohort_stratum, wear_stratum, standardization)]
+  id_cols <- meta[1L, c("spec_id", "stream", "set_name", "k", "adjusted", "role", "baseline", "cohort_stratum", "standardization", intersect(c("runin_variant", "runin_days"), names(meta))), with = FALSE]
   tag_meta <- function(tab) if (is.null(tab) || nrow(tab) == 0L) NULL else cbind(id_cols[rep(1L, nrow(tab))], tab)
+  if (!is.null(variant$runin_days)) info <- cbind(info, runin_fit_summary(fit, V, ftxt, cfg$primary_term, attr(dat, "cov0_center")))
   res <- list(coef = coef, info = info, fit = if (keep_fit) fit else NULL,
               gvif = if (!is.null(dg)) tag_meta(dg$gvif), wald = if (!is.null(dg)) tag_meta(dg$wald))
   rm(dat, fit); invisible(gc())          # give the memory back before the next model
@@ -306,13 +303,10 @@ check_fit_memory <- function(bundle, spec, cfg, variant = list(), extra_cols = 0
   if (!isTRUE(cfg$resources$memory_guard)) return(invisible(TRUE))
   n_pred <- length(spec$predictors[[1L]])
   # adjusters: cohort 3, age 1, sex 1, weekday 6, study-time spline 3, gap history 3, device family (levels - 1), CCI 2 (an upper bound)
-  n_adj <- 17 + (if ("device" %in% names(bundle$rs)) max(0L, nlevels(bundle$rs$device) - 1L) else 0L) + (if ("cci" %in% names(bundle$rs)) 2L else 0L)
+  n_adj <- 17 + (if (!is.null(variant$runin_days)) 4L else 0L) + (if ("device" %in% names(bundle$rs)) max(0L, nlevels(bundle$rs$device) - 1L) else 0L) + (if ("cci" %in% names(bundle$rs)) 2L else 0L)
   n_cols <- 2 * n_pred + (if (isTRUE(spec$adjusted)) n_adj else 0) + 3 + extra_cols
-  n_rows <- if (!is.null(variant$cohort)) sum(bundle$rs$cohort == variant$cohort, na.rm = TRUE)
-            else if (!is.null(variant$strata)) {
-              st <- variant$strata$stratum[match(bundle$rs$person_id, variant$strata$person_id)]
-              sum(!is.na(st) & (is.null(variant$stratum) | as.character(st) %in% variant$stratum))
-            } else nrow(bundle$rs)
+  n_rows <- if (!is.null(variant$cohort)) sum(bundle$rs$cohort == variant$cohort, na.rm = TRUE) else nrow(bundle$rs)
+  if (!is.null(variant$runin_days)) n_rows <- sum(bundle$rs$study_day > variant$runin_days, na.rm = TRUE)       # the run-in analysis only models the days after the run-in
   samp   <- effective_sample(cfg, spec$role)
   if (!is.null(samp) && !is.null(bundle$n_persons)) n_rows <- n_rows * min(1, samp / bundle$n_persons)
   need <- safety * estimate_fit_memory_gb(n_rows, n_cols, cfg$resources$bytes_per_cell)
@@ -372,8 +366,8 @@ marginal_risk <- function(coef, term, sigma2, at = c(-1, 0, 1), n_grid = 201L,
 
 # Likelihood-ratio test: does the within-person effect (`term`) differ between the groups of `by`?
 #   by = "cohort"  (default): the model with vs without the term x cohort interaction; cohort is already an adjuster.
-#   by = "stratum" (needs variant$strata, e.g. consistent vs inconsistent wear): the stratum main effect is added to both
-#   models, so the null model is "the same effect in every stratum, strata may differ in their overall gap risk".
+#   by = any other factor column of the model data: its main effect is added to both models, so the null model is "the same
+#   effect in every group, groups may differ in their overall gap risk".
 # One chi-square test on df = (number of groups - 1); it is the formal comparison of the groups, not a comparison of
 # which group's own estimate is significant.
 test_group_interaction_inner <- function(bundle, spec, cfg, term = cfg$primary_term, by = "cohort", variant = list()) {

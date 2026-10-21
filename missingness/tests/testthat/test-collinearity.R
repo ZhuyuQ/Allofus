@@ -51,6 +51,6 @@ test_that("every fitted onset model reports GVIF per term (factors / splines as 
   expect_equal(r$wald[term == "w_act_steps", chisq], (r$coef[term == "w_act_steps", estimate] / r$coef[term == "w_act_steps", se])^2, tolerance = 1e-6)   # joint test of one term = Wald z^2
   expect_lt(r$gvif[term == "w_act_steps", vif_equiv], 5)                      # the within-person predictors of the simulation are not collinear
   tab <- build_collinearity_table(list(onset_collinearity = r$gvif))
-  expect_true(all(c("analysis", "figure", "stratum") %in% names(tab))); expect_true(any(tab$figure))
+  expect_true(all(c("analysis", "figure", "figure_id", "stratum") %in% names(tab))); expect_true(any(tab$figure)); expect_true(all(tab[figure == TRUE, figure_id] %in% c("onset_primary", "onset_full_period", "model_B", "model_C")))
   expect_equal(unique(tab$analysis), "Primary onset model (gap >= 1 day)")
 })

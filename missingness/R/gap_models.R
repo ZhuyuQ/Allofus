@@ -62,11 +62,16 @@ collapse_sparse_bins <- function(f, min_n) {
 #   back2_dev       : first FULL day back = r + 1 (= post_k1; primary outcome of B)
 # With "full_period" back1_dev / back2_dev are z-scores against the person's whole-period mean (look-ahead).
 # Gaps without a usual (fewer than baseline_min_n observed days before them) have NA z-scores.
+#   runin_missing, prev_study_day : missing days of the person's run-in (first cfg$runin$days days) and the study day of the last observed day
+#                     before the gap; the run-in analysis keeps the gaps with prev_study_day > cfg$runin$days (runin.R)
 # Only the columns the models use are kept (no dates, no unused predictors).
 POST_GAP_DAYS <- 0:7
 build_gap_level_data <- function(days, act_days, persons, cfg, pred = "act_steps",
                                  standardization = cfg$standardization$method %||% "pre_gap") {
   gaps <- get_gap_runs(days)
+  rt <- runin_person_table(days, cfg$runin$days)          # missing days in the run-in and the study day of the last observed day before each gap (run-in analysis, runin.R)
+  gaps[rt, on = "person_id", `:=`(runin_missing = i.runin_missing, prev_study_day = as.integer(prev_obs_date - i.first_date) + 1L)]
+  rm(rt)
   pre_gap <- standardization == "pre_gap"
   mvpa <- "act_mvpa"
   has_mvpa <- cfg$predictors[[mvpa]]$col %in% names(act_days)
@@ -157,23 +162,29 @@ gap_curve_B <- function(fit, cfg) {
 #   pre-gap standardization as w_pre_day_steps, never the days after the gap, which are the outcome); gaps without it are
 #   dropped (n_gaps_no_mvpa counts them).
 # Returns list(coef, curve, observed, info); status "failed..." is never reported as a fit.
+# runin: NULL (all gaps) or a run-in variant ("reference" | "main" | "interaction", runin.R): only gaps AFTER the run-in are modelled;
+#   "main" adds cov0, "interaction" adds cov0 and log2_gap x cov0 (is the dose-response of the gap length different by run-in?).
 fit_gap_dose_response <- function(gdat, cfg, outcome = "back2_dev", adjusted = FALSE, adjust_pre = FALSE,
-                                  id = NA_character_, adjust_mvpa = FALSE) {
+                                  id = NA_character_, adjust_mvpa = FALSE, runin = NULL) {
   d <- gdat[!is.na(get(outcome)) & !is.na(log2_gap)]
+  if (!is.null(runin)) d <- d[prev_study_day > cfg$runin$days & !is.na(runin_missing)]
   if (adjust_pre) d <- d[!is.na(w_pre_day_steps)]
   if (adjusted) d <- d[complete.cases(d[, .(age10, sex2, cohort)])]
   n_no_mvpa <- if (adjust_mvpa) sum(is.na(d$w_pre_day_mvpa)) else 0L
   if (adjust_mvpa) d <- d[!is.na(w_pre_day_mvpa)]
+  if (!is.null(runin) && nrow(d)) add_runin_columns(d, cfg$runin$days, cfg)       # centred at the mean over the people analysed
   base <- data.table(model = "B", model_id = id, outcome = outcome, adjusted = adjusted, adjust_pre = adjust_pre,
                      adjust_mvpa = adjust_mvpa, n_gaps_no_mvpa = n_no_mvpa,
                      n_gaps = nrow(d), n_persons = uniqueN(d$person_id),
-                     outcome_mean = mean(d[[outcome]]), outcome_sd = stats::sd(d[[outcome]]),    # outcome distribution (z-scores: ~0 and ~1)
+                     outcome_mean = if (nrow(d)) mean(d[[outcome]]) else NA_real_, outcome_sd = if (nrow(d) > 1L) stats::sd(d[[outcome]]) else NA_real_,    # outcome distribution (z-scores: ~0 and ~1)
                      gaps_per_person_max = if (nrow(d)) max(table(d$person_id)) else NA_integer_)
+  if (!is.null(runin)) base[, `:=`(runin_variant = runin, runin_days = cfg$runin$days)]
   finish <- function(coef, coef_all = NULL) list(coef = coef, curve = NULL, observed = NULL, coef_all = coef_all,
                                                   gvif = NULL, wald = NULL, info = coef[, .(model_id, status, note)])
   if (nrow(d) < cfg$gap_models$min_gaps) return(finish(empty_B_row(base, "not_estimable", "too few gaps")))
 
-  rhs <- c("log2_gap", if (adjust_pre) "w_pre_day_steps", if (adjust_mvpa) "w_pre_day_mvpa", if (adjusted) gap_adjusters(d), "(1 | person_id)")
+  rhs <- c("log2_gap", if (adjust_pre) "w_pre_day_steps", if (adjust_mvpa) "w_pre_day_mvpa", if (adjusted) gap_adjusters(d),
+           if (!is.null(runin)) runin_formula_terms(runin, "log2_gap", d), "(1 | person_id)")
   notes <- character()
   fit <- tryCatch(withCallingHandlers(
     suppressMessages(lme4::lmer(stats::as.formula(paste(outcome, "~", paste(rhs, collapse = " + "))), data = d)),   # singularity is reported in `singular`
@@ -183,7 +194,13 @@ fit_gap_dose_response <- function(gdat, cfg, outcome = "back2_dev", adjusted = F
 
   conv <- lme4_converged(fit)
   vc <- as.data.frame(lme4::VarCorr(fit))
-  coef <- cbind(base, fixed_effect_row(fit, "log2_gap"), singular = lme4::isSingular(fit), converged = conv,
+  extra_cols <- if (!is.null(runin)) {                       # what the effect of the gap length at a given run-in needs (runin.R)
+    V <- as.matrix(stats::vcov(fit)); it <- "log2_gap:cov0"
+    data.table(cov0_center = unname(attr(d, "cov0_center")[["log"]]),
+               b_int = if (it %in% rownames(V)) unname(lme4::fixef(fit)[[it]]) else NA_real_, se_int = if (it %in% rownames(V)) sqrt(V[it, it]) else NA_real_,
+               cov_key_int = if (it %in% rownames(V)) V["log2_gap", it] else NA_real_)
+  }
+  coef <- cbind(base, fixed_effect_row(fit, "log2_gap"), extra_cols, singular = lme4::isSingular(fit), converged = conv,
                 sigma_person = vc$sdcor[vc$grp == "person_id"], sigma_resid = vc$sdcor[vc$grp == "Residual"],
                 status = if (conv) "ok" else "not_converged",
                 note = paste(c(if (lme4::isSingular(fit)) "singular fit (person variance ~ 0)", utils::head(unique(notes), 3L)),
@@ -194,9 +211,11 @@ fit_gap_dose_response <- function(gdat, cfg, outcome = "back2_dev", adjusted = F
   all_fx <- fixed_effects_table(fit)
   all_fx <- cbind(model_id = id, outcome = outcome, adjusted = adjusted, adjust_pre = adjust_pre, status = coef$status,
                   all_fx[term != "(Intercept)"])
+  if (!is.null(runin)) all_fx[, runin_variant := runin]
   dg <- fixed_effect_diagnostics(lme4::fixef(fit), as.matrix(stats::vcov(fit)), paste(outcome, "~", paste(setdiff(rhs, "(1 | person_id)"), collapse = " + ")))
-  list(coef = coef, curve = curve, observed = obs, coef_all = all_fx,
-       gvif = tag_diagnostics(dg$gvif, model = "B", model_id = id), wald = tag_diagnostics(dg$wald, model = "B", model_id = id),
+  gv <- tag_diagnostics(dg$gvif, model = "B", model_id = id); wd <- tag_diagnostics(dg$wald, model = "B", model_id = id)
+  if (!is.null(runin)) { if (!is.null(gv)) gv[, runin_variant := runin]; if (!is.null(wd)) wd[, runin_variant := runin] }
+  list(coef = coef, curve = curve, observed = obs, coef_all = all_fx, gvif = gv, wald = wd,
        info = coef[, .(model_id, status, note)])
 }
 
@@ -298,13 +317,25 @@ empty_C_row <- function(base, status, note = "", po_p = NA_real_) {
 # adjust_mvpa = TRUE adds MVPA on the last observed day before the gap (w_pre_day_mvpa, same day and same pre-gap standardization
 #   as the exposure w_pre_day_steps) as a covariate; it enters the proportional-odds check and the predicted probabilities as an
 #   ordinary covariate (only the effect of the steps term is tested for proportionality). Gaps without it are dropped.
-fit_gap_length_ordinal <- function(gdat, cfg, adjusted = FALSE, id = NA_character_, adjust_mvpa = FALSE) {
+# runin: NULL (all gaps) or "reference" | "main" | "interaction" (runin.R): only gaps AFTER the run-in; "interaction" adds cov0 and the
+#   product w_pre_day_steps x cov0 (is the steps -> longer-gap association different by run-in?). No predicted probabilities for these fits.
+fit_gap_length_ordinal <- function(gdat, cfg, adjusted = FALSE, id = NA_character_, adjust_mvpa = FALSE, runin = NULL) {
   d <- gdat[!is.na(w_pre_day_steps) & !is.na(length_bin)]
+  if (!is.null(runin)) d <- d[prev_study_day > cfg$runin$days & !is.na(runin_missing)]
   adj <- if (adjusted) gap_adjusters(d) else character()
   if (adjusted) d <- d[complete.cases(d[, ..adj])]
   n_no_mvpa <- if (adjust_mvpa) sum(is.na(d$w_pre_day_mvpa)) else 0L
   if (adjust_mvpa) d <- d[!is.na(w_pre_day_mvpa)]
-  cov_terms <- c(if (adjust_mvpa) "w_pre_day_mvpa", adj)                           # every covariate besides the exposure
+  runin_terms <- character()
+  if (!is.null(runin) && nrow(d)) {
+    add_runin_columns(d, cfg$runin$days, cfg)
+    if (data.table::uniqueN(d$cov0) > 1L) {
+      d[, w_x_cov0 := w_pre_day_steps * cov0]                                       # the product as a column: it also enters the proportional-odds check
+      runin_terms <- switch(runin, reference = character(), main = "cov0", interaction = c("cov0", "w_x_cov0"), stop("unknown run-in variant: ", runin, call. = FALSE))
+    }
+  }
+  cov_terms <- c(if (adjust_mvpa) "w_pre_day_mvpa", adj, runin_terms)                # every covariate besides the exposure
+  cov0_center <- if (!is.null(runin) && nrow(d)) unname(attr(d, "cov0_center")[["log"]]) else NA_real_
   d <- d[, c("person_id", "length_bin", "w_pre_day_steps", cov_terms), with = FALSE]      # nothing else is needed
   d[, length_bin := droplevels(length_bin)]
   counts <- table(d$length_bin)
@@ -312,10 +343,14 @@ fit_gap_length_ordinal <- function(gdat, cfg, adjusted = FALSE, id = NA_characte
                      n_gaps = nrow(d), n_persons = uniqueN(d$person_id),
                      length_groups = paste(names(counts), collapse = " | "),
                      group_counts = paste(counts, collapse = " | "))
-  finish <- function(coef, pred = NULL, coef_all = NULL, dg = NULL)
-    list(coef = coef, pred = pred, coef_all = coef_all,
-         gvif = if (!is.null(dg)) tag_diagnostics(dg$gvif, model = "C", model_id = id), wald = if (!is.null(dg)) tag_diagnostics(dg$wald, model = "C", model_id = id),
-         info = coef[, .(model_id, status, note)])
+  if (!is.null(runin)) base[, `:=`(runin_variant = runin, runin_days = cfg$runin$days)]
+  ren <- function(x) sub("^w_x_cov0$", "w_pre_day_steps:cov0", x)                      # the product column is reported under its model name
+  finish <- function(coef, pred = NULL, coef_all = NULL, dg = NULL) {
+    gv <- if (!is.null(dg)) tag_diagnostics(dg$gvif, model = "C", model_id = id); wd <- if (!is.null(dg)) tag_diagnostics(dg$wald, model = "C", model_id = id)
+    if (!is.null(runin) && !is.null(gv)) { gv[, `:=`(runin_variant = runin, term = ren(term))] }
+    if (!is.null(runin) && !is.null(wd)) { wd[, `:=`(runin_variant = runin, term = ren(term))] }
+    list(coef = coef, pred = pred, coef_all = coef_all, gvif = gv, wald = wd, info = coef[, .(model_id, status, note)])
+  }
   if (nrow(d) < cfg$gap_models$min_gaps) return(finish(empty_C_row(base, "not_estimable", "too few gaps")))
   if (nlevels(d$length_bin) < 3L) return(finish(empty_C_row(base, "not_estimable", "fewer than 3 length groups")))
 
@@ -341,7 +376,7 @@ fit_gap_length_ordinal <- function(gdat, cfg, adjusted = FALSE, id = NA_characte
     if (mixed_ok) { est <- par_hat[["w_pre_day_steps"]]; se <- sqrt(V["w_pre_day_steps", "w_pre_day_steps"]) }
     if (!conv) note <- "mixed model did not converge"
   }
-  Xadj <- if (length(cov_terms)) {
+  Xadj <- if (is.null(runin) && length(cov_terms)) {
     ix <- with_seed(cfg$seed, sample.int(nrow(d), min(cfg$predict$n_covariate_rows, nrow(d))))
     mm <- stats::model.matrix(stats::as.formula(paste("~", paste(cov_terms, collapse = " + "))), d[ix])[, -1L, drop = FALSE]
     mm
@@ -368,8 +403,7 @@ fit_gap_length_ordinal <- function(gdat, cfg, adjusted = FALSE, id = NA_characte
     note <- paste(c(note, "random-intercept variance on boundary or Hessian unusable; no random effect, cluster-bootstrap uncertainty"), collapse = "; ")
   }
   w_values <- c(-1, 0, 1)
-  pred <- ordinal_pred_table(par_hat, par_draws, levels(d$length_bin), Xadj, sigma2, w_values, cfg)
-  pred <- cbind(model_id = id, adjusted = adjusted, pred)
+  pred <- if (is.null(runin)) cbind(model_id = id, adjusted = adjusted, ordinal_pred_table(par_hat, par_draws, levels(d$length_bin), Xadj, sigma2, w_values, cfg))
 
   z <- est / se
   # clm/clmm: a positive coefficient -> longer gaps, so the odds ratio of a longer gap per +1 SD is exp(estimate)
@@ -379,6 +413,10 @@ fit_gap_length_ordinal <- function(gdat, cfg, adjusted = FALSE, id = NA_characte
                          or_low = exp(est - 1.96 * se), or_high = exp(est + 1.96 * se),
                          po_p = po$po_p, converged = conv, sigma_person = sqrt(sigma2), status = status,
                          note = paste(c(note, utils::head(unique(notes), 3L)), collapse = " | ")))
+  if (!is.null(runin)) coef <- cbind(coef, data.table(cov0_center = cov0_center,       # for the effect of the steps term at a given run-in (runin.R)
+                                                      b_int = if ("w_x_cov0" %in% names(par_hat)) unname(par_hat[["w_x_cov0"]]) else NA_real_,
+                                                      se_int = if ("w_x_cov0" %in% names(se_vec)) unname(se_vec[["w_x_cov0"]]) else NA_real_,
+                                                      cov_key_int = if ("w_x_cov0" %in% colnames(V_use)) V_use["w_pre_day_steps", "w_x_cov0"] else NA_real_))
   # every coefficient of the model (thresholds excluded) with its odds ratio of a LONGER gap: per +1 SD above usual for the
   # prior-day term (sign flipped, as in `coef`), per +1 unit / vs the reference level for the others
   b_names <- setdiff(names(par_hat), names(par_hat)[grepl("\\|", names(par_hat))])
@@ -387,6 +425,7 @@ fit_gap_length_ordinal <- function(gdat, cfg, adjusted = FALSE, id = NA_characte
                 p = 2 * stats::pnorm(abs(estimate / se), lower.tail = FALSE))]
   all_fx <- add_odds_ratios(all_fx)          # the `w_pre_day_steps` term is a within-person z-score: OR per +1 SD above usual
   all_fx <- cbind(model_id = id, adjusted = adjusted, status = status, all_fx)
+  if (!is.null(runin)) all_fx[, `:=`(runin_variant = runin, term = ren(term))]
   dg <- tryCatch(fixed_effect_diagnostics(par_hat[b_names], V_use[b_names, b_names, drop = FALSE], f_fixed), error = function(e) NULL)
   finish(coef, pred, all_fx, dg)
 }

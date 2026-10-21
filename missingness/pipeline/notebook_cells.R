@@ -9,8 +9,8 @@
 # missing, failed or outdated models run again. You never need to repeat Cells 5-9 (ETL) unless L1 is gone.
 #
 # ORDER OF THE ANALYSES (the reading order of README.md / STATISTICS.md):
-#   descriptive statistics (Cell 11, 11b) -> data quality and wear consistency (Cell 11c) -> primary models (Cells 12-15) ->
-#   sensitivity analyses (Cell 16) -> exploratory specifications (Cell 17) -> stratified analyses by wear consistency (Cell 18) ->
+#   descriptive statistics (Cell 11, 11b) -> data quality (device, Cell 11d) and the run-in description (Cell 11c) -> primary models (Cells 12-15) ->
+#   sensitivity analyses (Cell 16) -> exploratory specifications (Cell 17) -> the run-in analysis (Cell 18; sensitivity Cell 18b) ->
 #   export (Cell 19). Multicollinearity diagnostics (GVIF) are written by every model cell; Cell 18 prints their summary.
 # STANDARDIZATION: every within- and between-person z-score uses only data observed BEFORE each day / gap (cfg$standardization);
 #   Cell 16 adds the full-observation-period standardization as a sensitivity analysis.
@@ -144,16 +144,17 @@ print(res$missing_pct_by_stratum_tests[family == "groups_within_cohort" & test !
 print(res$missing_trend_tests[, .(stream, variable, cohort, unit, or = round(odds_ratio, 3), or_low = round(or_low, 3), or_high = round(or_high, 3),
       p = signif(p, 3), p_holm = signif(p_holm, 3), status)])
 
-# ==== CELL 11c   (data quality: wear consistency, descriptive only - no model; ~1 min)
-# Wear consistency = observed days / days between the first and last record, per person and stream. The classification rule
-# (consistent = at or above the stream's median) is fixed in cfg$wear and written to wear_consistency_classification BEFORE any
-# stratified model is fitted in Cell 18. Figures: wear_consistency_distribution, wear_consistency_composition.
-res <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, OUT_DIR, stages = "wear_consistency",
+# ==== CELL 11c   (run-in: description of the wear in the FIRST 28 days, no model; builds each stream's tables once, a few minutes per stream)
+# Run-in = the first cfg$runin$days (28) days of each person's follow-up in the stream. Missing days in the run-in is the wear measure of the run-in
+# analysis; everything modelled later (Cell 18) starts AFTER the run-in, so the measure always comes first (whole-period coverage is never used:
+# it contains the gaps that are the outcome). Hypotheses: H1 = more missing days in the run-in -> more gaps later; H2 = the steps effect depends on
+# the run-in. Figures: runin_distribution, runin_rate_by_category (H1), runin_steps_by_group_<stream> (H2); tables: runin_flow, runin_distribution,
+# runin_rate, runin_steps_by_group, runin_association.
+res <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, OUT_DIR, stages = "runin_description",
                                 model_streams = c("activity", "sleep", "hr"))
-print(res$wear_consistency_classification[, .(stream, method, cutoff = round(threshold, 4), n_consistent, n_inconsistent)])
-print(res$wear_consistency_descriptive[, .(stream, group, n_people, coverage_median = round(coverage_median, 3),
-                                           gaps_per_100_observed_days = round(gaps_per_100_observed_days, 1), age_mean = round(age_mean, 1), pct_female = round(pct_female, 1))])
-print(res$wear_consistency_composition[imbalanced == TRUE, .(stream, variable, smd = round(smd, 2))])   # characteristics that differ between the strata
+print(res$runin_flow[cohort == "All cohorts", .(stream, n_people, n_complete_runin, n_analysed, n_events_after_runin)])      # who is in the run-in analysis
+print(res$runin_distribution[cohort == "All cohorts", .(stream, category, n_people, pct = round(pct, 1))])
+print(res$runin_association[, .(stream, cohort, n_people, rho = round(rho, 2), p_holm = signif(p_holm, 2))])                 # person level: run-in missing days vs later gap rate
 
 # ==== CELL 11d   (data quality: missing Fitbit device version and device composition by cohort; person level, no model; needs Cells 6c and 8b; seconds)
 # WATCH data only: scales, clip-on trackers (One, Zip, Ultra, Classic) and phone tracking (MobileTrack) are NOT a watch version (cfg$device$forms / wrist_forms; the
@@ -183,7 +184,7 @@ for (v_ in unique(res$outcome_variable_tests$variable)) show_figure(OUT_DIR, pas
 
 # ==== CELL 12   (Cells 12-14: onset models. Figures per stream: onset_forest_other_<stream> = all predictors (incl. device family and CCI score; no calendar year),
 #                 onset_deciles_<stream> = observed gap rate by decile, gap_definition_all_terms_*_<stream> (model D), exploratory_grid_effects_<stream>,
-#                 collinearity_gvif_<stream>. Predictors are standardized with data observed BEFORE each day (pre-gap); models saved by an older
+#                 collinearity_gvif_<model>_<stream> (one figure per model: onset_primary, onset_full_period, model_B, model_C). Predictors are standardized with data observed BEFORE each day (pre-gap); models saved by an older
 #                 version of the code are refitted once.)
 res <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, OUT_DIR, stages = "onset",
                                 onset_roles = c("primary", "secondary_threshold"),
@@ -235,16 +236,29 @@ res <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg_fast, OUT_DIR, 
                                 onset_roles = "exploratory", model_streams = c("activity", "sleep", "hr"))
 print(table(res$onset_models$role, res$onset_models$stream))
 
-# ==== CELL 18   (stratified analyses by wear consistency: the primary onset model, model B and model C within each stratum; long)
-# The characterization of Cell 11c runs first inside this call. Reported per stratum: effect sizes with intervals, sample sizes, GVIF, convergence and
-# sparse-data flags; the strata are compared with a likelihood-ratio test of (steps x stratum) for the onset model and a Wald test of the difference of
-# two independent estimates for models B and C (wear_strata_comparison). Figures: wear_strata_primary_effect, wear_strata_*_all_terms_*.
-res <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, OUT_DIR, stages = "wear_strata",
+# ==== CELL 18   (run-in analysis, PRIMARY: the onset model, model B and model C on the days / gaps AFTER the first 28 days, without a run-in term and with the run-in AND its interaction; long)
+# The description of Cell 11c runs first inside this call. Same rows in both models. Run-in = log2(1 + missing days in the first 28 days), centred, per doubling;
+# its interaction is with the steps term (onset, C) / the gap length (B). H1 = run-in effect, H2 = interaction (the confirmatory test, Holm over the streams),
+# H3 = does the primary steps effect change. Figures (all prefixed runin_, apart from the main analysis): runin_primary_effect, runin_steps_by_missing_days,
+# runin_onset_all_terms_other_<stream>, runin_gapB_all_terms_<stream>, runin_gapC_all_terms_<stream>, and ONE GVIF figure per model: runin_gvif_onset_<stream>,
+# runin_gvif_model_B_<stream>, runin_gvif_model_C_<stream>. Other forms of the run-in are in Cell 18b (sensitivity).
+res <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, OUT_DIR, stages = "runin",
                                 model_streams = c("activity", "sleep", "hr"))
-print(res$wear_strata_comparison[, .(model, stream, consistent = round(effect_consistent, 2), inconsistent = round(effect_inconsistent, 2),
-                                     p_difference = signif(p_difference, 3))])
-print(res$wear_strata_quality[, .(model, stream, stratum, n_people, n_events, events_per_coefficient = round(events_per_coefficient, 1), status, sparse, usable)])
-print(res$model_collinearity[figure == TRUE & flag != "ok", .(stream, analysis, term, vif_equiv = round(vif_equiv, 1), flag)])   # terms with a high / severe VIF-equivalent
+print(res$runin_tests[analysis == "primary", .(model, stream, hypothesis, term, effect = round(effect, 3), low = round(low, 3), high = round(high, 3), p = signif(p, 3), p_holm = signif(p_holm, 3))])
+print(res$runin_primary_effect[variant %in% RUNIN_PRIMARY_VARIANTS, .(model, stream, variant, effect = round(effect, 3))])   # H3: the steps effect without / with the run-in terms
+print(res$runin_quality[variant %in% RUNIN_PRIMARY_VARIANTS, .(model, stream, variant, n_people, n_events, events_per_coefficient = round(events_per_coefficient, 1), status, sparse, usable)])
+print(res$runin_collinearity[variant == "interaction" & flag != "ok", .(stream, analysis, term, vif_equiv = round(vif_equiv, 1), flag)])   # run-in terms with a high / severe VIF-equivalent
+cat("failed units:", nrow(res$unit_failures), "\n")
+for (f_ in list.files(file.path(OUT_DIR, "figures"), pattern = "^runin_(primary|steps_by_missing|gvif)")) show_figure(OUT_DIR, sub("\\.png$", "", f_))
+
+# ==== CELL 18b  (run-in analysis, SENSITIVITY: the other forms of the run-in - main effect only, run-in as categories (shape check), run-in linear; long)
+# Runs the primary units first (finished ones are skipped). Figures (prefix runin_sensitivity_): runin_sensitivity_primary_effect, runin_sensitivity_shape,
+# runin_sensitivity_onset_all_terms_other_<stream>, runin_sensitivity_gapB_all_terms_<stream>, runin_sensitivity_gapC_all_terms_<stream>.
+# Tests (runin_tests, analysis = "sensitivity"): the likelihood-ratio test of H2 against the main-effect model, H1 / H2 with the linear coding, the shape of the coding.
+res <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, OUT_DIR, stages = "runin_sensitivity",
+                                model_streams = c("activity", "sleep", "hr"))
+print(res$runin_tests[analysis == "sensitivity", .(model, stream, hypothesis, form, effect = round(effect, 3), p = signif(p, 3), p_holm = signif(p_holm, 3))])
+print(res$runin_shape[, .(stream, variant, n_rows, aic = round(aic, 1), delta_aic_vs_main = round(delta_aic_vs_main, 1))])      # coding of the run-in: AIC of every form
 cat("failed units:", nrow(res$unit_failures), "\n")
 
 # ==== CELL 19

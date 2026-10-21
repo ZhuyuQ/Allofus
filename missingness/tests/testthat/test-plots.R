@@ -242,7 +242,7 @@ test_that("all-terms comparison forests: primary first (dark), every term but th
   expect_silent(suppressWarnings(ggplot2::ggplot_build(p))); expect_silent(suppressWarnings(ggplot2::ggplot_build(pe)))
 })
 
-test_that("collinearity, observed post-gap, wear-consistency and exploratory-grid figures build, with explicit sizes and labels", {
+test_that("collinearity, observed post-gap, run-in and exploratory-grid figures build, with explicit sizes and labels", {
   cfg <- make_config(); geoms <- function(p) vapply(p$layers, function(l) class(l$geom)[1L], "")
   gv <- data.table(stream = "activity", analysis = rep(c("Primary onset model (gap >= 1 day)", "Model C: C_adj"), each = 3L), term = rep(c("w_act_steps", "cohort", "age10"), 2),
                    df = rep(c(1L, 3L, 1L), 2), vif_equiv = c(1.2, 6, 12, 1, 2, 1.1), flag = c("ok", "high", "severe", "ok", "ok", "ok"))
@@ -261,17 +261,30 @@ test_that("collinearity, observed post-gap, wear-consistency and exploratory-gri
   expect_match(levels(p$data$panel)[1L], "1 day: 100 gaps, 60 people")
   expect_equal(range(p$data$days_since_return), c(0, 7)); expect_null(plot_post_gap_observed(tr, cv, "sleep", cfg))
 
-  w <- data.table(stream = rep(c("activity", "sleep"), each = 40L), cohort = rep(cfg$cohorts, 20L), coverage = c(runif(40, 0.7, 1), runif(40, 0.7, 1)))
-  crit <- data.table(stream = c("activity", "sleep"), threshold = 0.9, n_consistent = 20L, n_inconsistent = 20L)
-  expect_silent(suppressWarnings(ggplot2::ggplot_build(plot_wear_distribution(w, crit, cfg))))
-  comp <- data.table(stream = rep(c("activity", "sleep"), each = 3L), variable = rep(c("Age at first record (years)", "Female (%)", "Cohort: Healthy"), 2), smd = c(0.3, -0.05, 0.12, 0.2, 0.0, -0.3))
-  expect_silent(suppressWarnings(ggplot2::ggplot_build(plot_wear_composition(comp, cfg))))
-  cmp <- data.table(model = c("onset (primary)", "model C (adjusted)", "model B (adjusted)"), stream = "activity", effect_measure = c("odds ratio per +1 SD", "odds ratio per +1 SD", "SD change per unit"),
-                    effect_consistent = c(0.6, 0.9, -0.1), low_consistent = c(0.5, 0.7, -0.2), high_consistent = c(0.7, 1.1, 0), effect_inconsistent = c(0.7, 0.95, 0.0),
-                    low_inconsistent = c(0.6, 0.8, -0.1), high_inconsistent = c(0.8, 1.1, 0.1), p_difference = c(0.02, 0.6, 0.1), p_interaction_lrt = c(0.02, NA, NA))
-  p <- plot_wear_primary_effect(cmp, cfg); expect_silent(suppressWarnings(ggplot2::ggplot_build(p)))
-  expect_setequal(as.character(unique(p$data$panel)), c("onset (primary): activity", "model C (adjusted): activity"))      # odds-ratio models only (model B has its own forest)
-  expect_null(plot_wear_primary_effect(cmp[0L], cfg))
+  # run-in figures (runin.R): hand-made result tables
+  cats <- runin_category_labels(cfg)
+  dist <- CJ(stream = c("activity", "sleep"), cohort = c(cfg$cohorts, "All cohorts"), category = factor(cats, levels = cats))[, `:=`(n_people = 50L, pct = 25, total_people = 200L, median_missing_days_in_category = c(0, 1, 2, 6)[as.integer(category)], mean_missing_days = 2, pct_no_missing_day = 25)]
+  p <- plot_runin_distribution(dist, cfg); expect_silent(suppressWarnings(ggplot2::ggplot_build(p))); expect_null(plot_runin_distribution(dist[0L], cfg))
+  rate <- CJ(stream = c("activity", "sleep"), cohort = c(cfg$cohorts, "All cohorts"), category = cats)[, `:=`(n_people = 50L, n_rows = 1000L, n_events = 30L, rate = 2 + 0.5 * match(category, cats), rate_low = 1.5 + 0.5 * match(category, cats), rate_high = 2.5 + 0.5 * match(category, cats))]
+  assoc <- data.table(stream = "activity", cohort = c(cfg$cohorts, "All cohorts"), n_people = 100L, rho = 0.2, rho_low = 0.1, rho_high = 0.3, p = 0.01, p_holm = 0.03)
+  p <- plot_runin_rate(rate, assoc, cfg); expect_silent(suppressWarnings(ggplot2::ggplot_build(p))); expect_match(p$labels$caption, "Spearman"); expect_null(plot_runin_rate(rate[0L], assoc, cfg))
+  sg <- CJ(stream = "activity", cohort = cfg$cohorts, category = cats, bin = 1:5)[, `:=`(mean_z = (bin - 3) / 2, n_rows = 500L, n_events = 40L, n_people = 60L, rate = 3 - 0.3 * bin, rate_low = 2.5 - 0.3 * bin, rate_high = 3.5 - 0.3 * bin)]
+  p <- plot_runin_steps_by_group(sg, "activity", cfg); expect_silent(suppressWarnings(ggplot2::ggplot_build(p))); expect_null(plot_runin_steps_by_group(sg, "hr", cfg))
+  expect_null(plot_runin_steps_by_group(sg[, n_events := 5L], "activity", cfg))                                                   # bins with < 20 gaps are not drawn
+  pe <- CJ(model = c("onset", "model C"), stream = c("activity", "sleep"), variant = c("reference", "main", "interaction"))[, `:=`(term = "w_act_steps", effect = 0.7, low = 0.6, high = 0.8, p = 0.01, status = "ok", measure = "odds ratio")]
+  tt <- data.table(model = c("onset", "model C"), stream = "activity", analysis = "primary", hypothesis = "H2: steps effect depends on run-in", form = "log2 coding, with interaction",
+                   p_lrt = c(0.02, NA), p_wald = c(0.02, 0.4), p = c(0.02, 0.4), p_holm = c(0.04, 0.4))
+  p <- plot_runin_primary_effect(pe, tt, cfg); expect_silent(suppressWarnings(ggplot2::ggplot_build(p))); expect_match(p$labels$caption, "H2, steps x run-in interaction")
+  expect_setequal(as.character(unique(p$data$variant)), RUNIN_PRIMARY_VARIANTS)                                                    # the primary figure: reference and run-in + interaction only
+  ps <- plot_runin_primary_effect(pe, tt, cfg, variants = RUNIN_ONSET_VARIANTS, sensitivity = TRUE); expect_silent(suppressWarnings(ggplot2::ggplot_build(ps)))
+  expect_match(ps$labels$title, "Sensitivity"); expect_setequal(as.character(unique(ps$data$variant)), c("reference", "main", "interaction"))     # every form that exists is drawn there
+  eff <- CJ(model = c("onset", "model B"), stream = "activity", missing_days = c(0L, 1L, 3L, 7L))[, `:=`(estimate = 0, se = 0.1, effect = 0.7 + 0.02 * missing_days, low = 0.6, high = 0.8, measure = "x")]
+  p <- plot_runin_steps_by_missing(eff, tt, cfg); expect_silent(suppressWarnings(ggplot2::ggplot_build(p))); expect_equal(unique(as.character(p$data$model)), "onset")           # odds-ratio models only
+  cf <- rbind(CJ(stream = "activity", runin_variant = "categorical", term = paste0("cov0_cat", cats[-1L]))[, `:=`(or = 1.2, or_low = 1.0, or_high = 1.4)],
+              data.table(stream = "activity", runin_variant = "main", term = "cov0", estimate = 0.1, se = 0.03), fill = TRUE)
+  p <- plot_runin_shape(cf, NULL, dist, data.table(stream = "activity", variant = "categorical", delta_aic_vs_main = -1.5), cfg); expect_silent(suppressWarnings(ggplot2::ggplot_build(p)))
+  expect_match(p$labels$caption, "AIC")
+  expect_equal(term_label("w_act_steps:cov0"), "Within: Steps x run-in"); expect_equal(term_label("cov0"), "Run-in: missing days (log2)"); expect_equal(term_label("cov0_cat2-3"), "Run-in: 2-3 missing days")
 
   co <- CJ(stream = "activity", set_name = c("uni_act_steps", "joint"), adjusted = c(FALSE, TRUE), term = c("w_act_steps", "b_act_steps"))[
     , `:=`(k = 1L, role = ifelse(set_name == "joint" & adjusted, "primary", "exploratory"), or = 0.8, or_low = 0.7, or_high = 0.9)]
@@ -281,30 +294,30 @@ test_that("collinearity, observed post-gap, wear-consistency and exploratory-gri
   # intervals that cannot be estimated (0 / Inf after separation) are left out: no "infinite values" warning on the log axis
   co2 <- copy(co); co2[1L, `:=`(or_low = 0, or_high = Inf)]
   p2 <- plot_exploratory_grid(co2, "activity", cfg); expect_silent(ggplot2::ggplot_build(p2)); expect_equal(nrow(p2$data), nrow(co) - 1L)
-  cmp2 <- copy(cmp); cmp2[1L, `:=`(low_inconsistent = 0, high_inconsistent = Inf)]
-  p3 <- plot_wear_primary_effect(cmp2, cfg); expect_silent(ggplot2::ggplot_build(p3)); expect_equal(nrow(p3$data), 3L)                     # 2 odds-ratio models x 2 strata, one row dropped
+  pe2 <- copy(pe); pe2[1L, `:=`(low = 0, high = Inf)]
+  p3 <- plot_runin_primary_effect(pe2, tt, cfg); expect_silent(ggplot2::ggplot_build(p3)); expect_equal(nrow(p3$data), sum(pe$variant %in% RUNIN_PRIMARY_VARIANTS) - 1L)      # an interval that cannot be estimated is not drawn
 })
 
 test_that("every figure belongs to one analysis step of the workflow and has a caption; figure_index.tsv lists them", {
-  nm <- c("heatmap_sleep", "missing_pct_by_sex", "transition", "wear_consistency_distribution", "wear_consistency_composition", "onset_forest_other_activity",
-          "onset_deciles_hr", "risk_curve", "gap_dose_response", "gapC_forest_hr", "post_gap_activity_observed_sleep", "wear_strata_primary_effect",
-          "wear_strata_onset_all_terms_other_activity", "wear_strata_gapB_all_terms_hr", "sensitivity_forest_hr", "sensitivity_all_terms_other_hr", "forest_sensitivity",
+  nm <- c("heatmap_sleep", "missing_pct_by_sex", "transition", "runin_distribution", "runin_rate_by_category", "onset_forest_other_activity",
+          "onset_deciles_hr", "risk_curve", "gap_dose_response", "gapC_forest_hr", "post_gap_activity_observed_sleep", "runin_primary_effect",
+          "runin_onset_all_terms_other_activity", "runin_gapB_all_terms_hr", "runin_steps_by_group_sleep", "runin_steps_by_missing_days", "runin_sensitivity_shape", "sensitivity_forest_hr", "sensitivity_all_terms_other_hr", "forest_sensitivity",
           "gap_definition_all_terms_other_sleep", "exploratory_grid_effects_activity", "collinearity_gvif_hr")
   steps <- vapply(nm, function(n) figure_analysis(n)$step, 1L)
   expect_false(anyNA(steps)); expect_false(anyNA(vapply(nm, caption_for, character(1))))
-  expect_equal(unname(steps[c("heatmap_sleep", "transition", "wear_consistency_distribution", "risk_curve", "wear_strata_primary_effect", "sensitivity_forest_hr", "collinearity_gvif_hr")]), c(1L, 2L, 3L, 4L, 5L, 6L, 7L))
+  expect_equal(unname(steps[c("heatmap_sleep", "transition", "risk_curve", "runin_primary_effect", "sensitivity_forest_hr", "collinearity_gvif_hr")]), c(1L, 2L, 4L, 5L, 6L, 7L))
   expect_true(is.na(figure_analysis("not_a_figure")$step))
   d <- tempfile(); dir.create(file.path(d, "figures"), recursive = TRUE); for (n in nm[1:3]) file.create(file.path(d, "figures", paste0(n, ".png")))
   write_figure_captions(nm[1:3], d, make_config())
   ix <- fread(file.path(d, "figures", "figure_index.tsv"))
   expect_equal(ix$figure, c("heatmap_sleep.png", "missing_pct_by_sex.png", "transition.png")); expect_equal(ix$step, c(1L, 1L, 2L))
   expect_true(all(c("figure", "step", "analysis", "model", "caption") %in% names(ix)))
-  expect_match(caption_for("collinearity_gvif_hr"), "VIF-equivalent"); expect_match(caption_for("wear_strata_primary_effect"), "formal test")
+  expect_match(caption_for("collinearity_gvif_model_B_hr"), "ONE model"); expect_match(caption_for("runin_gvif_onset_activity"), "run-in and its interaction"); expect_equal(figure_analysis("runin_gvif_onset_activity")$step, 5L); expect_equal(figure_analysis("collinearity_gvif_onset_primary_hr")$step, 7L); expect_match(caption_for("runin_sensitivity_shape"), "SENSITIVITY"); expect_match(caption_for("runin_sensitivity_gapB_all_terms_hr"), "SENSITIVITY"); expect_match(caption_for("runin_primary_effect"), "H3"); expect_match(caption_for("runin_rate_by_category"), "H1")
 })
 
 test_that("every result table is assigned to an analysis step and table_index.tsv lists them", {
-  nm <- c("cohort_missingness", "missing_pct_by_stratum", "metric_summary", "transition", "weekday_tests", "wear_consistency_classification", "onset_coefficients", "primary_test",
-          "model_B_post_gap_activity", "model_C_gap_length", "wear_strata_comparison", "sensitivity_all_terms", "model_collinearity", "onset_term_tests", "unit_failures")
+  nm <- c("cohort_missingness", "missing_pct_by_stratum", "metric_summary", "transition", "weekday_tests", "device_tests", "onset_coefficients", "primary_test",
+          "model_B_post_gap_activity", "model_C_gap_length", "runin_tests", "sensitivity_all_terms", "model_collinearity", "onset_term_tests", "unit_failures")
   st <- vapply(nm, function(n) table_analysis(n)$step, 1L)
   expect_equal(unname(st), c(1L, 1L, 1L, 2L, 2L, 3L, 4L, 4L, 4L, 4L, 5L, 6L, 7L, 7L, 7L))
   d <- tempfile(); dir.create(file.path(d, "tables"), recursive = TRUE)

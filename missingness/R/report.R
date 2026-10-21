@@ -62,15 +62,14 @@ show_figure <- function(outdir, name) {
 # ---- execution summary: what is done, what failed, what was skipped ---------------------------------------
 
 # The analysis step and the model a figure belongs to, in the order of the workflow:
-#   1 descriptive statistics -> 2 temporal patterns -> 3 data quality / wear-consistency characterization -> 4 primary models
-#   -> 5 stratified analyses -> 6 sensitivity analyses -> 7 model diagnostics
+#   1 descriptive statistics -> 2 temporal patterns -> 3 data quality (device version) -> 4 primary models
+#   -> 5 run-in analysis (wear in the first days and later gaps) -> 6 sensitivity analyses -> 7 model diagnostics
 # (the exploratory specifications are listed with the primary models, step 4). Returns data.table(step, analysis, model).
 figure_analysis <- function(name) {
   rules <- list(
     c("^device_",                              "3", "Data quality: device version",            "device version (descriptive, person level)"),
     c("^outcome_by_variable",                  "1", "Descriptive statistics: outcome by model variable", "descriptive (person level)"),
-    c("^wear_consistency_",                    "3", "Data quality: wear consistency",          "wear coverage (descriptive)"),
-    c("^wear_strata_",                         "5", "Stratified analyses: wear consistency",   "gap onset / model B / model C within strata"),
+    c("^runin_",                               "5", "Run-in analysis: wear in the first days and later gaps", "gap onset / model B / model C after the run-in"),
     c("^collinearity_",                        "7", "Model diagnostics",                       "all models (GVIF)"),
     c("^sensitivity_|^forest_sensitivity",     "6", "Sensitivity analyses",                    "gap onset (primary model, alternative assumptions)"),
     c("^onset_|^risk_curve|^cohort_forest|^forest_gap_definition|^gap_definition_|^exploratory_grid_", "4", "Primary models: gap onset", "gap onset (primary, model D, exploratory)"),
@@ -85,11 +84,10 @@ figure_analysis <- function(name) {
 # The same for the result tables: which analysis step each table in <outdir>/tables belongs to.
 table_analysis <- function(name) {
   rules <- list(
+    c("^runin_",                                               "5", "Run-in analysis: wear in the first days and later gaps"),
     c("collinearity|term_tests|^unit_|^checkpoint_|failures",  "7", "Model diagnostics and run status"),
     c("^device_",                                              "3", "Data quality: device version"),
     c("^outcome_variable",                                     "1", "Descriptive statistics: outcome by model variable"),
-    c("^wear_consistency_",                                    "3", "Data quality: wear consistency"),
-    c("^wear_strata_",                                         "5", "Stratified analyses: wear consistency"),
     c("^sensitivity",                                          "6", "Sensitivity analyses"),
     c("^onset_|^primary_test|^vif$|^cohort_interaction|^cohort_specific|^risk_unadjusted", "4", "Primary models: gap onset"),
     c("^model_B",                                              "4", "Primary models: gap-level activity after a gap (model B)"),
@@ -158,13 +156,18 @@ write_results_summary <- function(res, cfg, outdir) {
            if (nrow(fl) == 0L) "No term reached a VIF-equivalent of 5." else c("Terms with a VIF-equivalent >= 5 (high) or >= 10 (severe); nothing was removed because of it. They widen that term's interval and do not bias the others:",
              fl[, .(max_vif = max(vif_equiv)), by = .(stream, term, flag)][order(stream, -max_vif)][, sprintf("* %s: %s (%s, max %.1f)", stream, term, flag, max_vif)]), "")
   }
-  if (!is.null(res$wear_strata_comparison) && nrow(res$wear_strata_comparison) > 0L) {
-    L <- c(L, "## Wear consistency (consistent vs inconsistent wear; reference: consistent)",
-           "Primary term by stratum and the test that the strata differ (not the significance of either stratum):",
-           res$wear_strata_comparison[, sprintf("* %s, %s: %.2f (%.2f-%.2f) vs %.2f (%.2f-%.2f); p(difference) = %s", model, stream, effect_consistent, low_consistent, high_consistent,
-                                                effect_inconsistent, low_inconsistent, high_inconsistent, signif(p_difference, 2))], "")
-    if (!is.null(res$wear_strata_quality) && nrow(res$wear_strata_quality[usable == FALSE]) > 0L)
-      L <- c(L, "Strata that are sparse (< events per coefficient threshold) or did not converge cleanly are listed in wear_strata_quality.tsv.", "")
+  if (!is.null(res$runin_tests) && nrow(res$runin_tests) > 0L) {
+    L <- c(L, sprintf("## Run-in analysis (wear in the first %d days; only gaps AFTER the run-in are modelled)", cfg$runin$days),
+           "Primary analysis (model with the run-in and its interaction). H1: more missing days in the run-in -> later gaps (per doubling of 1 + missing days). H2: the steps effect depends on the run-in (the confirmatory test; Holm over the streams). Other forms of the run-in are in the sensitivity analysis (runin_tests.tsv, analysis = sensitivity).",
+           res$runin_tests[analysis == "primary", sprintf("* %s, %s, %s: %.2f (%.2f-%.2f), p = %s, Holm p = %s", model, stream, substr(hypothesis, 1L, 2L), effect, low, high,
+                                                          signif(p, 2), signif(p_holm, 2))], "")
+    pe <- res$runin_primary_effect
+    if (!is.null(pe) && nrow(pe) > 0L) {
+      w <- dcast(pe[variant %in% c("reference", "main", "interaction")], model + stream ~ variant, value.var = "effect")
+      if (all(c("reference", "main") %in% names(w)))
+        L <- c(L, "Primary effect without / with the run-in terms (robustness, H3):",
+               w[, sprintf("* %s, %s: %.2f without, %.2f with the run-in", model, stream, reference, main)], "")
+    }
   }
   B <- res$model_B_post_gap_activity
   if (!is.null(B) && nrow(B) > 0L) {

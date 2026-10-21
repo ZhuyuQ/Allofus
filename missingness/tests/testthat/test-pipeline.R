@@ -230,33 +230,57 @@ test_that("the sensitivity stage writes the all-predictor table and one forest p
   expect_gt(nrow(r$sensitivity_all_terms), nrow(r$sensitivity[!analysis %in% c("spline_vs_linear", "random_slope")]))
 })
 
-test_that("wear consistency: the characterization alone fits no model; the stratified stage writes the criteria BEFORE any stratified model, then tables, figures and the figure index", {
+test_that("run-in analysis: the description alone fits no model; the models stage adds the fits after the run-in, tables, figures, the figure index, and resumes", {
   cfg <- cfg_test()
   inp <- suppressMessages(simulate_inputs(cfg, n_per_cohort = c(Insomnia = 60, Diabetes = 60, Healthy = 120, Prostate = 30), seed = 5))
   out <- tempfile(); quiet <- function(expr) invisible(suppressWarnings(suppressMessages(capture.output(r <- expr))))
-  r1 <- NULL; quiet(r1 <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, out, stages = "wear_consistency", model_streams = c("activity", "sleep")))
-  expect_true(all(file.exists(file.path(out, "tables", paste0(c("wear_consistency_classification", "wear_consistency_descriptive", "wear_consistency_composition", "wear_consistency_by_person"), ".tsv")))))
-  expect_true(all(file.exists(file.path(out, "figures", c("wear_consistency_distribution.png", "wear_consistency_composition.png")))))
-  expect_false(dir.exists(file.path(out, "checkpoints")) && length(list.files(file.path(out, "checkpoints"))) > 0L)         # no model was fitted
-  expect_equal(r1$wear_consistency_classification$stream, c("activity", "sleep")); expect_true(all(r1$wear_consistency_classification$method == "median"))
+  r1 <- NULL; quiet(r1 <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, out, stages = "runin_description", model_streams = c("activity", "sleep")))
+  expect_true(all(file.exists(file.path(out, "tables", paste0(c("runin_flow", "runin_distribution", "runin_rate", "runin_steps_by_group", "runin_association"), ".tsv")))))
+  expect_true(all(file.exists(file.path(out, "figures", c("runin_distribution.png", "runin_rate_by_category.png", "runin_steps_by_group_activity.png")))))
+  expect_equal(sort(unique(r1$runin_flow$stream)), c("activity", "sleep"))
+  expect_false(any(grepl("^runin_onset|^runin_gap", list.files(file.path(out, "checkpoints")))))                                 # no model was fitted
 
-  r2 <- NULL; quiet(r2 <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, out, stages = "wear_strata", model_streams = "activity"))
-  ck <- file.path(out, "checkpoints"); wf <- list.files(ck, pattern = "^wear_", full.names = TRUE)
-  expect_gt(length(wf), 0L)
-  expect_lte(as.numeric(file.mtime(file.path(out, "tables", "wear_consistency_classification.tsv"))), min(as.numeric(file.mtime(wf))))   # criteria on disk before the first stratified fit
-  tabs <- c("wear_strata_onset_coefficients", "wear_strata_onset_models", "wear_strata_interaction", "wear_strata_comparison", "wear_strata_quality",
-            "wear_strata_onset_collinearity", "wear_strata_onset_term_tests", "model_collinearity", "model_term_tests")
+  r2 <- NULL; quiet(r2 <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, out, stages = "runin", model_streams = "activity"))
+  expect_true(is.null(r2$unit_failures) || nrow(r2$unit_failures) == 0L)
+  tabs <- c("runin_onset_coefficients", "runin_onset_models", "runin_gapB", "runin_gapB_all_terms", "runin_gapC", "runin_gapC_all_terms", "runin_tests", "runin_effect_by_missing",
+            "runin_primary_effect", "runin_quality", "runin_onset_collinearity", "runin_collinearity", "runin_term_tests")
   expect_true(all(file.exists(file.path(out, "tables", paste0(tabs, ".tsv")))))
-  figs <- c("wear_strata_primary_effect", "wear_strata_onset_all_terms_other_activity", "collinearity_gvif_activity")
-  expect_true(all(file.exists(file.path(out, "figures", paste0(figs, ".png")))))
+  # PRIMARY analysis only: the reference and the model with the run-in and its interaction; nothing of the sensitivity forms
+  expect_setequal(r2$runin_onset_models[stream == "activity", runin_variant], RUNIN_PRIMARY_VARIANTS)
+  expect_equal(uniqueN(r2$runin_onset_models[stream == "activity", n_rows]), 1L)                                                  # both variants use the same rows
+  expect_true(all(r2$runin_tests$analysis == "primary"))
+  expect_false(any(grepl("sensitivity", list.files(file.path(out, "figures")))))
+  figs <- c("runin_primary_effect", "runin_steps_by_missing_days", "runin_onset_all_terms_other_activity", "runin_gapB_all_terms_activity", "runin_gapC_all_terms_activity",
+            "runin_gvif_onset_activity", "runin_gvif_model_B_activity", "runin_gvif_model_C_activity")
+  expect_true(all(file.exists(file.path(out, "figures", paste0(figs, ".png")))))                                                  # one GVIF figure per run-in model
+  expect_false(any(grepl("^collinearity_gvif", list.files(file.path(out, "figures")))))                                           # the main diagnostics are not mixed with the run-in
+  expect_false(any(grepl("Run-in", if (file.exists(file.path(out, "tables", "model_collinearity.tsv"))) fread(file.path(out, "tables", "model_collinearity.tsv"))$analysis else "")))
   ix <- fread(file.path(out, "figures", "figure_index.tsv"))
-  expect_equal(ix[figure == "wear_strata_primary_effect.png", step], 5L); expect_equal(ix[figure == "collinearity_gvif_activity.png", step], 7L)
-  expect_equal(ix[figure == "wear_consistency_distribution.png", step], 3L)
-  expect_true(any(r2$model_collinearity$figure) && all(c("analysis", "term", "df", "vif_equiv", "flag") %in% names(r2$model_collinearity)))
-  expect_match(paste(readLines(file.path(out, "results_summary.md")), collapse = " "), "Wear consistency")
+  expect_equal(ix[figure == "runin_primary_effect.png", step], 5L); expect_equal(ix[figure == "runin_distribution.png", step], 5L); expect_equal(ix[figure == "runin_gvif_onset_activity.png", step], 5L)
+  expect_true(any(r2$runin_collinearity$figure) && all(r2$runin_collinearity[figure == TRUE, variant] == "interaction"))
+  expect_match(paste(readLines(file.path(out, "results_summary.md")), collapse = " "), "Run-in analysis")
+  expect_false(any(grepl("wear_strata|wear_consistency", list.files(file.path(out, "tables")))))                                  # the stratification is gone
   # the stage resumes
-  r3 <- NULL; quiet(r3 <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, out, stages = "wear_strata", model_streams = "activity"))
-  expect_true(all(r3$unit_run_status[grepl("wear_strata", stream), status] == "resumed"))
+  r3 <- NULL; quiet(r3 <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, out, stages = "runin", model_streams = "activity"))
+  expect_true(all(r3$unit_run_status[grepl("runin", stream), status] == "resumed"))
+
+  # SENSITIVITY: the other forms, own figures; the primary units are resumed
+  rs <- NULL; quiet(rs <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, out, stages = "runin_sensitivity", model_streams = "activity"))
+  expect_setequal(rs$runin_onset_models[stream == "activity", runin_variant], RUNIN_ONSET_VARIANTS)
+  expect_true(all(c("primary", "sensitivity") %in% rs$runin_tests$analysis))
+  expect_true(any(rs$runin_tests$analysis == "sensitivity" & grepl("LRT", rs$runin_tests$form)))
+  sfigs <- c("runin_sensitivity_primary_effect", "runin_sensitivity_shape", "runin_sensitivity_onset_all_terms_other_activity", "runin_sensitivity_gapB_all_terms_activity", "runin_sensitivity_gapC_all_terms_activity")
+  expect_true(all(file.exists(file.path(out, "figures", paste0(sfigs, ".png")))))
+  expect_true(all(rs$unit_run_status[grepl("runin", stream), status] %in% c("computed", "resumed")))
+  # the main analysis has one GVIF figure PER MODEL, apart from the run-in figures
+  rm_ <- NULL; quiet(rm_ <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, out, stages = "onset", onset_roles = "primary", model_streams = "activity"))
+  expect_true(file.exists(file.path(out, "figures", "collinearity_gvif_onset_primary_activity.png")))
+  expect_false(file.exists(file.path(out, "figures", "collinearity_gvif_activity.png")))                                           # no combined figure
+  expect_true(all(is.na(rm_$model_collinearity[figure == FALSE, figure_id])) && !any(grepl("Run-in", rm_$model_collinearity$analysis)))
+  # another run-in length is another result, never mixed with the first
+  cfg2 <- cfg; cfg2$runin$days <- 21L
+  r4 <- NULL; quiet(r4 <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg2, out, stages = "runin_description", model_streams = "activity"))
+  expect_true(all(r4$unit_run_status[grepl("runin", stream), status] == "computed"))
 })
 
 test_that("the full-period standardization is a separate sensitivity analysis, and the primary models use the pre-gap standardization", {

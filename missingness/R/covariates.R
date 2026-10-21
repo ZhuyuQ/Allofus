@@ -1,7 +1,7 @@
 # ==============================================================================
 # covariates.R
 # ------------------------------------------------------------------------------
-# The person-level covariates of EVERY model (gap onset, models B and C, sensitivity, wear strata), built in one place so that all
+# The person-level covariates of EVERY model (gap onset, models B and C, sensitivity, run-in analysis), built in one place so that all
 # models code them identically.
 #
 #   cohort       factor, reference Healthy (cfg$reference_cohort)

@@ -135,14 +135,17 @@ make_config <- function(overrides = list()) {
     # "full_period" (sensitivity only): the person's usual is the mean over the whole observation period (look-ahead).
     standardization = list(method = "pre_gap", baseline_min_n = 7L),
 
-    # ---- wear consistency (stratified analysis at the end of the workflow) --------------------------
-    # wear consistency of a person in a stream = observed-day coverage = observed days / days between the person's first
-    # and last record in that stream. "median": consistent = coverage >= the stream's median over the analysed people;
-    # "fixed": consistent = coverage >= `threshold`. The rule is fixed here, BEFORE any stratified model is fitted.
-    wear = list(method = "median", threshold = 0.90,
-                onset_roles = "primary",       # onset models fitted within each stratum ("secondary_threshold" adds model D)
-                min_persons_stratum = 100L,    # a stratum with fewer people is described but not modelled
-                epv_min = 10),                 # events per estimated coefficient below this = "sparse" flag
+    # ---- run-in analysis: wear in the FIRST days of follow-up as a predictor of LATER gaps ---------------------------
+    # The first `days` days of each person's follow-up (study days 1..days, counted in the modelled stream) are the run-in.
+    # missing days in the run-in = days - observed days among them. Everything the run-in analysis models starts AFTER the run-in
+    # (prior days with study_day > days; for models B and C, gaps whose last observed day before them is after the run-in), so the
+    # run-in measure is always earlier than the outcome it is related to. Whole-period coverage is never used (it contains the outcome).
+    #   cov0 = log2(1 + missing days in the run-in), centred at its mean over the analysed people (per doubling of 1 + missing days)
+    #   categories (shape check): upper bounds of the groups 0 | 1 | 2-3 | >=4 missing days; reference = 0
+    runin = list(days = 28L,
+                 cat_breaks = c(0L, 1L, 3L),
+                 deciles = 5L,                 # bins of the prior-day steps z-score in the descriptive figure of the steps-gap curve by run-in group
+                 epv_min = 10),                # events per estimated coefficient below this = "sparse" flag
 
     # ---- onset-model settings ------------------------------------------------
     onset = list(

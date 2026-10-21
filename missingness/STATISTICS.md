@@ -12,9 +12,9 @@ primary models, is the last model cell):
 |---|---|---|---|
 | 1 | descriptive statistics of missingness and of the metric values | 2, 4 | 11, 11b |
 | 2 | temporal structure of missingness | 3 | 11 |
-| 3 | data quality: wear consistency (characterization, classification rule fixed before any model) | 10.1-10.2 | 11c |
+| 3 | data quality: device version | 10b | 11d |
 | 4 | primary models: gap onset (primary, model A, model D), gap-level models B and C, exploratory specifications | 5, 7 | 12-15, 17 |
-| 5 | stratified analyses by wear consistency, with the formal comparison of the strata | 10.3-10.5 | 18 |
+| 5 | run-in analysis: wear in the first 28 days and gaps later (onset, B, C; H1-H3) | 10 | 11c, 18 |
 | 6 | sensitivity analyses (incl. full-observation-period standardization) | 6 | 16 |
 | 7 | model diagnostics (multicollinearity, joint term tests, convergence) and integrated interpretation | 11, 9 | printed by 12-18 |
 
@@ -32,7 +32,7 @@ resumption*; leading missingness and permanent drop-out are invisible by constru
 layers: (1) descriptive person-level missingness and its temporal structure; (2) a mixed-effects logistic
 model of **gap onset** given the previous day's values, whose predictors are standardized only with data observed
 **before** each day; (3) two exploratory models that use **gap length** (which is only known after a gap ends and is
-therefore never a predictor of onset); (4) the same models within strata of **wear consistency**, sensitivity analyses
+therefore never a predictor of onset); (4) the same models on the days after a **run-in** of the first 28 days, with and without the person's wear in that run-in, sensitivity analyses
 (including a full-observation-period standardization) and collinearity diagnostics. No disease-label prediction
 and no mixture model is part of the analysis.
 
@@ -40,7 +40,7 @@ and no mixture model is part of the analysis.
 Cell 5) -> people / person-days per stream (`L1/manifest.tsv`, Cell 8) -> the upstream selection check (`selection_check`) ->
 people and gaps per cohort (`cohort_missingness`) -> rows, people, events and people with events of every model
 (`onset_models`: `n_rows`, `n_persons`, `n_events`, `n_persons_event`; `model_B_post_gap_activity` / `model_C_gap_length`: `n_gaps`,
-`n_persons`) -> people per wear stratum (`wear_consistency_classification`, `wear_strata_quality`). A day needs at least
+`n_persons`) -> people, rows and events after the run-in (`runin_flow`, `runin_quality`). A day needs at least
 `cfg$standardization$baseline_min_n` (7) earlier observed days to have a within- or between-person z-score, so the first days of each person are not
 in the models; the number of rows lost this way is the difference between the risk set and `n_rows`.
 
@@ -405,10 +405,10 @@ intervals: model B in SD units of the activity on the first full day back (per +
 | MVPA before the gap (models B, C) | B: SD change per +1 SD MVPA; C: OR of a longer gap per +1 SD MVPA (with and without MVPA in the model) | Wald `p`, `vif_equiv` | `gap_mvpa_effects` |
 | observed activity after gaps | mean z-score by gap length and day since return, clustered interval, n gaps / people | none | `model_B_observed_trajectory` |
 | full-period standardization (sensitivity) | OR per +1 SD, same terms as the primary model | Wald `p` | `sensitivity` / `sensitivity_all_terms` (`analysis = full_period_standardization`), `model_B_post_gap_activity` / `model_C_gap_length` (`*_fullperiod`) |
-| wear consistency | coverage, strata, composition (SMD) | none | `wear_consistency_classification`, `wear_consistency_descriptive`, `wear_consistency_composition`, `wear_consistency_by_person` |
-| stratified models | OR (onset, C) / SD change (B) per stratum, every term | strata compared: LRT of (steps x stratum) (onset); Wald test of the difference of independent estimates (B, C) | `wear_strata_onset_coefficients`, `wear_strata_gapB`, `wear_strata_gapC` (+ `*_all_terms`), `wear_strata_interaction`, `wear_strata_comparison`, `wear_strata_quality` |
-| multicollinearity | GVIF, GVIF^(1/(2 df)), VIF-equivalent, flag | none (diagnostic) | `model_collinearity` (all models), `onset_collinearity`, `sensitivity_collinearity`, `gap_collinearity`, `wear_strata_onset_collinearity` |
-| joint tests of terms | chi-square of all coefficients of a term | Wald chi-square, `df`, `p` | `model_term_tests`, `onset_term_tests`, `gap_term_tests`, `wear_strata_onset_term_tests` |
+| run-in: description | missing days in the first N days by cohort; gap rate after the run-in by run-in group; steps-gap curve by run-in group; person-level Spearman rho | none (descriptive) | `runin_flow`, `runin_distribution`, `runin_rate`, `runin_steps_by_group`, `runin_association` |
+| run-in: models | OR (onset, C) / SD change (B) of every term, without and with the run-in and its interaction (primary), other forms (sensitivity); effect of steps at 0, 1, 3, 7 missing days | primary: H1 `cov0`, H2 key term x `cov0` (Wald), Holm over the streams; sensitivity: LRT of H2 vs the main-effect model, linear coding, shape (AIC, LRT) | `runin_onset_coefficients`, `runin_gapB(_all_terms)`, `runin_gapC(_all_terms)`, `runin_tests`, `runin_shape`, `runin_effect_by_missing`, `runin_primary_effect`, `runin_quality` |
+| multicollinearity | GVIF, GVIF^(1/(2 df)), VIF-equivalent, flag | none (diagnostic) | `model_collinearity` (all models), `onset_collinearity`, `sensitivity_collinearity`, `gap_collinearity`, `runin_onset_collinearity`, `runin_gap_collinearity` |
+| joint tests of terms | chi-square of all coefficients of a term | Wald chi-square, `df`, `p` | `model_term_tests`, `onset_term_tests`, `gap_term_tests`, `runin_onset_term_tests`, `runin_gap_term_tests` |
 
 ## 9. Multiplicity, assumptions and what the results can and cannot say
 
@@ -429,62 +429,79 @@ intervals: model B in SD units of the activity on the first full day back (per +
 * **Nothing is subsampled automatically**; if a model cannot fit in memory it is recorded as failed. `sample_persons` is an explicit option that
   widens intervals but does not change the model.
 
-## 10. Stratified analysis by wear consistency [`wear_consistency.R`]
+## 10. Run-in analysis: wear in the first days and gaps later [`runin.R`]
 
-**Purpose.** Do the findings (prior-day steps and the odds of a gap; activity after a gap; gap length) hold in people who wore the device consistently
-and in people who wore it inconsistently? The analysis comes last because it needs the primary models and uses them unchanged.
+**Why not whole-period coverage.** Coverage = observed days / days between the first and last record contains the gaps that are the outcome: a person
+with more gaps has lower coverage by construction. Stratifying on it (or adding it to a model) conditions on the outcome, and for activity the median
+split put everyone with a perfect record in one group that had no events at all. The earlier stratified analysis was therefore removed. The run-in
+analysis uses only days that lie **before** the days it models.
 
-### 10.1 Measure and classification (fixed before any stratified model)
+### 10.1 Definition
 
-* **Wear consistency of a person in a stream = observed-day coverage** = `observed days / days between the person's first and last record in that stream`
-  (= `1 - pct_missing / 100` of the missingness summaries; `wear_coverage_table()`). It is reproducible from the day tables alone and uses the same
-  observation window as the gap definition. People were selected upstream on >= 70% coverage, so coverage lies in [0.70, 1]; "inconsistent" means
-  "more interruptions than the typical participant", not "barely wore it".
-* **Rule** (`cfg$wear`, written to `wear_consistency_classification` **before** any stratified model is fitted, and part of every stratified checkpoint key):
-  `method = "median"` (default): **Consistent = coverage >= the stream's median** over the analysed people, otherwise Inconsistent (ties at the median
-  are consistent); `method = "fixed"`: Consistent = coverage >= `cfg$wear$threshold`. The median split gives strata of similar size and is a property
-  of the sample, not tuned to any result. The stratum is defined in the **stream that is modelled**.
-* **What the stratification can and cannot show.** Coverage is built from the same observed days that define the outcome: a person with many
-  gaps has lower coverage and contributes more events. The strata therefore differ by construction in how often gaps occur, and a difference in the
-  stratified estimates is **effect modification by wear pattern**, not an effect of wear consistency, and the strata are not exchangeable
-  (see the composition table). Conditioning on a function of the outcome can also change which kind of person is in which stratum; nothing here
-  corrects for that.
+* **Run-in** = study days `1..N` of each person in the modelled stream (`cfg$runin$days`, `N = 28`; study day 1 = the first record, which is observed by
+  definition). **`m` = missing days in the run-in** = `N - observed days among them` (`runin_person_table()`); NA if the follow-up is shorter than `N` days.
+  Days after the run-in never enter `m`: a gap that starts inside the run-in and runs past it counts only its days inside the run-in.
+* **Modelled days.** Onset model: prior days `d` with `study_day > N` of people with a complete run-in (the outcome is a gap starting on `d + 1`); models B and C:
+  gaps whose last observed day before the gap has `study_day > N`. **Every variant of a model uses exactly the same rows.**
+* **Coding.** `cov0 = log2(1 + m)`, centred at its mean over the *people* analysed (`add_runin_columns()`): one coefficient = per **doubling of (1 + missing days)**; the
+  centring keeps the main effect of the steps term the effect at the average run-in and makes the product `steps x cov0` nearly uncorrelated with both terms.
+  Why the log scale: most people have `m = 0` (a point mass) and the rest are right-skewed, so a straight line in `m` is dominated by the tail and by the
+  spike at 0; the log also stabilises the variance of a count and matches the other day counts of the model (previous gap length, days since return).
+  Completeness in percent is only a straight-line transform of `m` (identical fit), so the real choice is the functional form, checked below.
+  `cov0_cat` = 0 | 1 | 2-3 | >= 4 missing days (reference 0; `cfg$runin$cat_breaks`); `cov0_lin` = `100 m / N / 10`, centred (per +10 percentage points).
 
-### 10.2 Descriptive statistics (stage `wear_consistency`, Cell 11c; no model)
+### 10.2 Hypotheses (stated before the results)
 
-`wear_consistency_descriptive`: per stream and group (All / Consistent / Inconsistent): people, coverage median (Q1-Q3), follow-up and observed days,
-gaps per person and per 100 observed days, % with any gap, longest gap, longest run of observed days, age, % female, CCI, cohort shares.
-`wear_consistency_composition`: **standardized mean differences** (Consistent minus Inconsistent) in age, sex, CCI, follow-up length and each
-cohort share (`SMD = (m1 - m2) / sqrt((v1 + v2) / 2)`; for binary variables with the proportion variance `p(1-p)`); `|SMD| > 0.1` is read as a relevant
-imbalance **[convention]**. `wear_consistency_by_person`: the person-level table behind the figures. Figures: `wear_consistency_distribution` (ECDF of
-coverage by cohort with the cut-off), `wear_consistency_composition`.
+* **H1 (wear trait -> later gaps):** more missing days in the run-in -> higher odds that a gap starts later (`cov0` main effect > 0).
+* **H2 (effect modification, the confirmatory test):** the association between a higher-than-usual steps day and a gap tomorrow depends on the run-in
+  (`w_act_steps x cov0`). Model B: the same question for the gap-length term (`log2_gap x cov0`); model C: for the steps-before-the-gap term. Holm over the streams
+  within a model.
+* **H3 (robustness):** the primary odds ratio of steps is the same without and with the run-in terms (`runin_primary_effect`). A fixed person-level trait cannot
+  bias a within-person effect (the random intercept and the between-person terms absorb it); the run-in terms test whether early wear explains it anyway.
 
-### 10.3 Models within each stratum (stage `wear_strata`, Cell 18)
+### 10.3 Variants (the same model, the same rows)
 
-The existing models are refitted **unchanged** (same formulas, predictors, outcomes, standardization) on the people of one stratum:
-* the **primary onset model** (joint, adjusted, k = 1; `cfg$wear$onset_roles` = `"primary"`, add `"secondary_threshold"` for model D);
-* **model B** (adjusted; first full day back) and **model C** (adjusted, ordinal);
-the stratum is defined per stream, and `cohort`, `age10`, `sex2` are dropped inside a stratum where they are constant. Strata with fewer than
-`cfg$wear$min_persons_stratum` (100) people are described but not modelled. Not stratified: the exploratory grid, model D by default and the other sensitivity analyses.
+**Primary analysis (stage `runin`, Cell 18):** the model **without** a run-in term (`reference`) and the model with the **run-in and its interaction** with the key term (`interaction`).
+**Sensitivity analysis (stage `runin_sensitivity`, Cell 18b):** every other form, with tables (`runin_tests`, `analysis = "sensitivity"`) and figures (`runin_sensitivity_*`) of their own.
 
-### 10.4 Comparing the strata (the formal question)
+| variant | terms added to the adjusted model | models | analysis |
+|---|---|---|---|
+| `reference` | none | onset, B, C | primary |
+| `interaction` | `cov0` + key term x `cov0` | onset, B, C | **primary** (H1: `cov0`, H2: the product) |
+| `main` | `cov0` (the null model of the LRT of H2) | onset, B, C | sensitivity |
+| `categorical` | `cov0_cat` (shape check) | onset | sensitivity |
+| `linear_interaction` | `cov0_lin` + key term x `cov0_lin` (functional-form sensitivity) | onset | sensitivity |
 
-* **Onset model**: a likelihood-ratio test of `w_act_steps x stratum` (the stratum main effect is in both models; `df = 1`), fitted on all people with the
-  common adjusters (`wear_strata_interaction`). This is the test of "the same within-person association in both strata".
-* **Models B and C**: the strata contain different people, so the two stratum-specific estimates are independent and
-  `z = (b_inconsistent - b_consistent) / sqrt(se_c^2 + se_i^2)` tests the difference (`compare_strata()`). For the log-odds models (onset, C) the exponentiated
-  difference is the **ratio of odds ratios, Inconsistent / Consistent** (`ratio_of_or` with 95% CI); for B it is a difference in SD units per doubling.
-* `wear_strata_comparison` lists, per model and stream, both strata's effect (OR with 95% CI, or SD change), the difference or ratio with its interval, `p_wald`
-  and `p_difference` (the LRT p for the onset model, otherwise the Wald p). **One significant and one non-significant stratum are never read as a difference.**
-  The strata are not multiplicity-adjusted.
+Key term: onset = `w_act_steps`; B = `log2_gap`; C = `w_pre_day_steps`. No predicted probabilities are made for the run-in fits of model C (the product term would need
+the covariate at each prediction); the proportional-odds check uses the same covariates.
 
-### 10.5 Sparse data, convergence and composition (`wear_strata_quality`)
+### 10.4 Tests and diagnostics
 
-Per fitted stratum: people, events (onset) or gaps (B, C), coefficients, **events per coefficient** (flag `sparse` if below `cfg$wear$epv_min` = 10 **[convention]**),
-`status` (`ok`, `ok_bootstrap_se`, `not_converged`, `not_estimable`, `po_rejected`), `singular`, and `usable` (= estimable, converged and not sparse). The model
-information (`wear_strata_onset_models`), collinearity and term tests of each stratum are saved as well. Differences in composition between the strata
-(10.2) can explain a difference between the strata estimates that has nothing to do with wear; the adjusted models adjust only for cohort, age, sex and the
-usual covariates.
+* `runin_tests` (`analysis` = `primary` | `sensitivity`, `form` = the coding): **primary** = H1 (`cov0`) and H2 (key term x `cov0`) of the model with the run-in and its interaction, Wald z, per model
+  and stream (the steps term is centred, so `cov0` is the run-in effect at the average steps). **Sensitivity** = the likelihood-ratio test of H2 on identical rows (`interaction` vs `main`, `df = 1`), H1 from
+  the `main` model (Wald and LRT against `reference`), the linear coding, and the shape of the coding (categories vs `reference`, LRT). Models B and C: Wald z (the B fit is REML).
+  `p_holm`: one family per model, analysis, hypothesis and form, over the streams.
+* `runin_shape`: log-likelihood and AIC of every onset variant, `delta_aic_vs_main`, and the LRT of each coding against `reference`. The categorical coding is not nested in the
+  log coding, so the comparison is by AIC; with very many events small differences are significant, so judge by whether the conclusions (direction, size) change.
+* `runin_effect_by_missing`: the steps effect at 0, 1, 3 and 7 missing days, `b_key + b_int (log2(1 + m) - centre)` with variance `v_key + L^2 v_int + 2 L cov`.
+* **Collinearity:** GVIF of every run-in model (`runin_onset_collinearity`, `runin_gap_collinearity`, in `model_collinearity`). A gap in the run-in makes `any_prior_gap = 1` for the
+  rest of follow-up, so `cov0` and `any_prior_gap` overlap by construction; the effect of `cov0` is then identified partly by the timing of the first gap. The GVIF shows
+  how much this inflates the interval; nothing is removed because of it.
+* `runin_quality`: events (or gaps) per coefficient (`cfg$runin$epv_min` = 10 **[convention]**), status, `usable`.
+
+### 10.5 Descriptive statistics (stage `runin_description`, Cell 11c; no model)
+
+`runin_flow` (people, complete run-ins, people / rows / events after the run-in), `runin_distribution` (missing-days groups by cohort), `runin_rate` (H1: gap rate per 100
+observed days after the run-in by run-in group, 95% interval with people as clusters, `cluster_mean_ci`), `runin_steps_by_group` (H2: the same rate by quintile of
+prior-day steps, per run-in group and cohort; bins with fewer than 20 gaps are not drawn), `runin_association` (person-level Spearman correlation between `m` and the person's later
+gap rate, Bonett-Wright interval, Holm over cohorts). All unadjusted and descriptive.
+
+### 10.6 Limits
+
+* The measure is noisy (28 days): the run-in coefficients are attenuated; `cfg$runin$days` can be changed (another length is another result, never mixed in a checkpoint).
+* The 70% observed-days selection of the cohort ties early to later coverage (people with a poor start must have compensated later).
+* The first `N` days of every person, and people with a shorter follow-up, are not modelled; a gap that starts in the run-in is a prior gap for the history terms.
+* Association, not causation: early wear is a marker of how a person engages with the device.
 
 ## 10b. Fitbit device version: missing and composition by cohort [`device.R`]
 
@@ -537,10 +554,10 @@ the correlation of the raw columns. Terms that need several coefficients (cohort
 **Thresholds [convention]**: VIF-equivalent >= 5 "high", >= 10 "severe" (`flag`); they are rules of thumb, not tests. **Interpretation**: a VIF-equivalent of v inflates
 the standard error of that term by `sqrt(v)` and makes its estimate unstable against small changes of the data; it does **not** bias the coefficients or the predictions, and
 the odds ratios of the **other** terms are unaffected except through their own VIF. **Nothing is removed or re-specified because of a high VIF**; flagged terms
-are listed in `results_summary.md` and the figure `collinearity_gvif_<stream>` (one panel per model: primary onset, full-period standardization, models B and C,
-the two wear strata). **Within- vs between-person terms**: `w` is a deviation from the person's usual and `b` is the usual itself, so they are nearly uncorrelated by
+are listed in `results_summary.md` and in the figures `collinearity_gvif_<model>_<stream>` (ONE figure per model: `onset_primary`, `onset_full_period`, `model_B`, `model_C`;
+the run-in models have their own, `runin_gvif_<onset|model_B|model_C>_<stream>`, and their own tables `runin_collinearity`, `runin_term_tests`). **Within- vs between-person terms**: `w` is a deviation from the person's usual and `b` is the usual itself, so they are nearly uncorrelated by
 construction; high VIFs, if any, are expected among the **between-person** terms (people who walk more also have more MVPA) and among the gap-history terms
-(`prev_gap_len_l`, `any_prior_gap`, `days_since_return_l`). **Interactions**: the interaction models (`w x cohort`, `w x stratum`) are used only for likelihood-ratio
+(`prev_gap_len_l`, `any_prior_gap`, `days_since_return_l`). **Interactions**: the cohort interaction models (`w x cohort`) are used only for likelihood-ratio
 tests; their product terms are collinear with their main effects by construction, so GVIF is reported for the main-effects model (the stratified fits are
 main-effects fits). The conditional logit (only time-varying terms, no between-person terms) and the pooled cluster-robust fit (the same design as the primary fit)
 are not diagnosed separately.
@@ -557,7 +574,7 @@ with one coefficient gives `chisq = (b / se)^2`, the squared Wald z.
   units, reference 0. Model labels and units are on every axis / subtitle.
 * **Interval**: dot +/- 1 SD of the estimate (its standard error; `cfg$plot$interval_style = "ci95"` gives the 95% interval). A bar that does not cross 1 (0)
   is **not** the test: p values and, for strata, the formal comparison are in the tables.
-* **All terms**: `onset_forest_*`, `sensitivity_all_terms_*`, `gap_definition_all_terms_*`, `wear_strata_*_all_terms_*` show every coefficient of the model
+* **All terms**: `onset_forest_*`, `sensitivity_all_terms_*`, `gap_definition_all_terms_*`, `runin_onset_all_terms_other_*`, `runin_gapB_all_terms_*`, `runin_gapC_all_terms_*` show every coefficient of the model
   (predictors, cohort, age, sex, weekday, device family, CCI score, gap history; reference levels Healthy, Female, Monday, the largest non-Missing device family). The study-time
   spline and the intercept are not drawn (joint tests instead). A term whose interval cannot be estimated (for example a device family with almost no gaps, standard error of the log odds ratio above 10) is left out of the figure with a note in its subtitle; the tables keep it. The first (dark) colour is always the primary analysis; the other colours are the sensitivity
   analysis, gap definition or stratum it is compared with. Only terms that exist in a model are drawn (the conditional logit has no cohort or between-person term).
@@ -569,17 +586,17 @@ Implemented and tested (`tests/testthat/`): the pre-gap baseline (`prior_mean`, 
 decomposition `x = m + sd_w w`, `m = mu_b + sd_b b` and the reference distributions; **no look-ahead** (changing a person's later values leaves the earlier deviations
 unchanged for the pre-gap standardization and changes them for the full-period one; the same for the gap table: changes after the post-gap window leave a gap's z-scores
 unchanged except for the common scale constant); that the full-period standardization reproduces the earlier specification; odds ratio = exp(coefficient) for every term;
-GVIF against the textbook VIF / the determinant formula, flags and the joint Wald tests against direct matrix computation; classification by wear consistency (median, fixed,
-ties, determinism), the standardized mean differences, the comparison of strata (independent-estimate test, ratio of odds ratios, the reference does not change the test), that
-stratified data are a partition of the people, that the interaction test detects a planted difference between strata (p < 0.001) and not a common effect, resumable
-stratified units whose checkpoints depend on the classification rule, and that every new figure builds with the intended layers, labels and sizes.
+GVIF against the textbook VIF / the determinant formula, flags and the joint Wald tests against direct matrix computation; the run-in measure (first N days only, no look-ahead, NA for short follow-up,
+a gap running past the run-in counts only its run-in days), the centring and categories, that every variant of a model uses the same rows after the run-in, that the
+stored pieces reproduce the interaction coefficients and the effect at a given number of missing days, that a planted shared wear trait is found by the run-in term (and is
+absent when nothing is planted), resumable run-in units whose checkpoints depend on the run-in definition, and that every new figure builds with the intended layers, labels and sizes.
 
 Regression check: the `full_period` standardization reproduces the previous version of `predictor_table()` exactly (all `w_`, `b_`, `tw_` columns and the scaling constants identical, maximum absolute difference 0 on simulated data).
 
 Simulation check of the primary estimate (24 replicates of a simulated study of 300 people with a **known** effect, log-odds -0.5 per +1 within-person SD of log steps; script
-`pipeline/validate_simulation.R`): see section 13.1. **Not validated**: any behaviour on the real data (distribution of coverage, size of the strata, real collinearity, real
-effect of the baseline definition); the stratified models at full size (time and memory were measured for the primary models only, see README); the cut-off of the median split
-(a design choice); the sensitivity of the conclusions to the 7-day minimum baseline.
+`pipeline/validate_simulation.R`): see section 13.1. **Not validated**: any behaviour on the real data (distribution of the run-in, real collinearity, real
+effect of the baseline definition); the run-in models at full size (time and memory were measured for the primary models only, see README); the run-in length of 28 days
+(a design choice, change `cfg$runin$days` to check it); the sensitivity of the conclusions to the 7-day minimum baseline.
 
 ### 13.1 Simulation results (not real data)
 
