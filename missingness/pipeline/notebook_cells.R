@@ -182,8 +182,11 @@ print(res$outcome_variable_tests[, .(stream, variable, test, n, p_holm = signif(
                                      p_cohorts_differ_holm = signif(p_cohort_difference_holm, 3))])
 for (v_ in unique(res$outcome_variable_tests$variable)) show_figure(OUT_DIR, paste0("outcome_by_variable_", v_))     # shows each saved figure here
 
+# NOTE (reference-set rule): in the SLEEP and HEART-RATE streams the activity predictors of the onset models, and the day BEFORE a gap in models B and C, are now standardized against the person's
+#   days observed in that stream (not all activity days); the days AFTER a gap (model B outcome) keep all activity days. The sleep / heart-rate onset, sensitivity, run-in and gap-model results are
+#   therefore refitted once (Cells 13, 14, 15, 16, 18, 18b); the ACTIVITY stream's finished results stay valid.
 # ==== CELL 12   (Cells 12-14: onset models. Figures per stream: onset_forest_other_<stream> = all predictors (incl. device family and CCI score; no calendar year),
-#                 onset_deciles_<stream> = observed gap rate by decile, gap_definition_all_terms_*_<stream> (model D), exploratory_grid_effects_<stream>,
+#                 onset_deciles_<stream> = observed gap rate by decile, pre_gap_activity_observed_<stream> = observed steps on the days before a gap (like the post-gap figure of model B), gap_definition_all_terms_*_<stream> (model D), exploratory_grid_effects_<stream>,
 #                 collinearity_gvif_<model>_<stream> (one figure per model: onset_primary, onset_full_period, model_B, model_C). Predictors are standardized with data observed BEFORE each day (pre-gap); models saved by an older
 #                 version of the code are refitted once.)
 res <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, OUT_DIR, stages = "onset",
@@ -209,6 +212,9 @@ print(res$primary_test)
 # version of the code are refitted ONCE; model C is the slow one. B_back2_adj_fullperiod / C_adj_fullperiod are the full-period sensitivity fits.
 # MVPA before the gap as an extra covariate (units B_back2_adj_mvpa, B_back2_adj_pre_mvpa, C_adj_mvpa; the existing units are NOT refitted): table
 # gap_mvpa_effects, figures gapB_mvpa_effect_<stream>, gapC_mvpa_effect_<stream>.
+# NEW: models B and C now refer to the last FULL day before the gap (d - 1) like the onset model (exposure of C, pre-gap covariates of B, and the usual the days after the gap
+# are standardized with); the day right before the gap (d) is the sensitivity analysis: units *_dbg_all, *_same_full, *_same_dbg, C_adj_both_days; table gap_day_check,
+# figures gapB_day_check_<stream>, gapC_day_check_<stream>. All B and C units are refitted ONCE.
 # Models B and C: independent units per stream (the B and C specifications and their variants), each saved on its own. They are built from
 # the gaps and one activity predictor only (no person-day table), so they need little memory.
 res <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, OUT_DIR, stages = "gap_models",
@@ -224,9 +230,14 @@ if (nrow(res$unit_failures) > 0L) print(res$unit_failures)
 # ==== CELL 16   (sensitivity analyses, incl. the NEW full-period standardization; figures per stream: sensitivity_forest_<stream> = within-person
 #                predictors under every analysis, sensitivity_all_terms_other_<stream> = ALL terms (incl. the CCI refits cci_removed / cci_as_groups / cci_within_cohort); units saved by an older version are
 #                refitted ONCE - this is the long cell)
+# NEW: the primary onset model (and the whole onset family) now reads the predictors from the last FULL day d - 1 (the calendar day before d, the last day with a record before a
+# gap; the mirror image of the first full day back in model B). The day right before the gap (d, may be a partial day) is a SENSITIVITY analysis: day_before_gap (all rows),
+# last_full_day_same_rows / day_before_gap_same_rows / both_days (identical rows); tables day_check, day_descriptive, day_pattern; figures day_check_<stream>, day_pattern_<stream>.
 res <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, OUT_DIR, stages = "sensitivity",
                                 model_streams = c("activity", "sleep", "hr"))
 print(res$sensitivity[, .(stream, analysis, term, or = round(or, 2), p = signif(p, 3), status)])
+print(res$day_check[, .(stream, model, or = round(or, 3), low = round(or_low, 3), high = round(or_high, 3), p = signif(p, 3), p_holm = signif(p_holm, 3))])   # last full day d - 1 (primary) vs the day before the gap d
+print(res$day_descriptive[, .(stream, quantity, mean_gap = round(mean_gap, 3), mean_no_gap = round(mean_no_gap, 3), difference = round(difference, 3), p = signif(p, 3))])   # steps z-score by gap status; the change d - 1 -> d
 
 # ==== CELL 17
 cfg_fast <- make_config(list(export  = list(date = EXPORT_DATE),

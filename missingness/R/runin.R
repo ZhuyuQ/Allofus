@@ -10,7 +10,7 @@
 #   run-in            study days 1..N of the person in the modelled stream (N = cfg$runin$days, 28)
 #   missing days m    N - observed days among them (0 .. N-1; the first record is observed by definition). NA if the person's
 #                     follow-up is shorter than N days.
-#   modelled days     onset model: prior days d with study_day > N (the outcome is a gap starting on d + 1);
+#   modelled days     onset model: rows whose predictor day (the last full day d - 1) has study_day > N (the outcome is a gap starting on d + 1);
 #                     models B and C: gaps whose last observed day before the gap has study_day > N.
 #   cov0              log2(1 + m), centred at its mean over the people analysed (one coefficient = per DOUBLING of 1 + m; the
 #                     centring keeps the main effect of the steps term the effect at the average run-in)
@@ -114,8 +114,10 @@ runin_describe <- function(bundle, cfg, k = cfg$onset$primary_k, term = cfg$prim
   n_days <- cfg$runin$days; ycol <- paste0("y_ge", k); s <- bundle$stream
   rs <- bundle$rs
   pp_all <- unique(rs[, .(person_id, cohort, runin_missing)])
-  after <- rs[rs$study_day > n_days & !is.na(rs$runin_missing) & !is.na(rs[[ycol]]), c("person_id", "cohort", "runin_missing", ycol, term), with = FALSE]
-  setnames(after, c(ycol, term), c("y", "z"))
+  pd <- rs_at_predictor_day(rs, c(term, "study_day"), cfg)                  # the term and the study day on the day the model reads its predictors from
+  after <- cbind(rs[, c("person_id", "cohort", "runin_missing", ycol), with = FALSE], pd)
+  after <- after[study_day > n_days & !is.na(runin_missing) & !is.na(get(ycol)) & !is.na(get(term))][, study_day := NULL]
+  setnames(after, c(ycol, term), c("y", "z")); rm(pd)
   after[, category := runin_category(runin_missing, cfg)]
   co_levels <- c(cfg$cohorts, "All cohorts")
 

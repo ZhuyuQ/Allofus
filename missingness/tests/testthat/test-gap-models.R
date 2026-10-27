@@ -15,16 +15,23 @@ test_that("gap-level data lines up with the activity z-scores before and after e
   fx <- gap_fixture(); g <- gap_data_for(fx, "sleep")
   expect_equal(nrow(g), nrow(get_gap_runs(fx$inp$day_tables$sleep)))
   expect_false(any(c("prev_obs_date", "next_obs_date", "gap_start", "gap_end", "gap_index") %in% names(g)))
+  # the days AFTER the gap and their usual: all activity days; the day BEFORE the gap: z against the usual on the days observed in the sleep stream (restrict_to_stream_days)
   a <- predictor_table(fx$inp$day_tables$activity, "act_steps", fx$cfg, trailing = FALSE, keep_x = TRUE, keep_baseline = TRUE)
   sdw <- attr(a, "scales")$sd_within
+  a_s <- predictor_table(restrict_to_stream_days(fx$inp$day_tables$activity, fx$inp$day_tables$sleep), "act_steps", fx$cfg, trailing = FALSE, keep_x = FALSE)
   gr <- get_gap_runs(fx$inp$day_tables$sleep)
-  i <- which(!is.na(g$w_pre_day_steps) & !is.na(g$back2_dev))[1]
-  key <- g[i, .(person_id, gap_length)]
-  row <- gr[person_id == key$person_id & gap_length == key$gap_length][1]
-  pre <- a[person_id == row$person_id & date == row$prev_obs_date]
-  expect_equal(g$w_pre_day_steps[i], pre$w_act_steps)                                     # the day before the gap: against the usual BEFORE that day
-  # the days after the gap: against the usual THROUGH the last day before the gap (data observed before the gap only)
+  i <- which(!is.na(g$w_pre_day_steps) & !is.na(g$back2_dev) & !is.na(g$alt_w_pre_day_steps) & !is.na(g$alt_back2_dev))[1]
+  expect_equal(g$person_id, gr$person_id); expect_equal(g$gap_length, gr$gap_length)                      # the gap table keeps the order of the gaps
+  row <- gr[i]
+  pre <- a[person_id == row$person_id & date == row$prev_obs_date - 1L]                                  # the last FULL day before the gap, d - 1
+  expect_equal(g$w_pre_day_steps[i], a_s[person_id == row$person_id & date == row$prev_obs_date - 1L, w_act_steps])          # d - 1: against the usual BEFORE that day, on the days observed in the sleep stream
+  # the days after the gap: against the usual THROUGH the last full day before the gap, d - 1 (the possibly partial last recorded day d is not in it)
   expect_equal(g$back2_dev[i], (a[person_id == row$person_id & date == row$next_obs_date + 1L, x_act_steps] - pre$m_act_steps) / sdw)
+  # the sensitivity columns read the last recorded day d instead
+  pre_d <- a[person_id == row$person_id & date == row$prev_obs_date]
+  expect_equal(g$alt_w_pre_day_steps[i], a_s[person_id == row$person_id & date == row$prev_obs_date, w_act_steps], ignore_attr = TRUE)
+  expect_equal(g$alt_back2_dev[i], (a[person_id == row$person_id & date == row$next_obs_date + 1L, x_act_steps] - pre_d$m_act_steps) / sdw)
+  expect_equal(g$back2_dev[i] - g$alt_back2_dev[i], (pre_d$m_act_steps - pre$m_act_steps) / sdw)                 # the baselines differ by the contribution of day d
   expect_equal(g$back1_dev[i], g$post_k0[i]); expect_equal(g$back2_dev[i], g$post_k1[i])
   expect_equal(g$log2_gap[i], log2(g$gap_length[i]))
   expect_true(all(paste0("post_k", 0:7) %in% names(g)))
@@ -34,7 +41,8 @@ test_that("gap data from the activity-only predictor equal those from the full b
   fx <- gap_fixture(); b <- suppressMessages(prepare_stream_bundle("sleep", fx$inp$day_tables, fx$inp$persons, fx$cfg))
   g <- gap_data_for(fx, "sleep"); gr <- get_gap_runs(fx$inp$day_tables$sleep)
   a <- b$rs[, .(person_id, date, w = w_act_steps)]; setkey(a, person_id, date)
-  expect_equal(sort(g$w_pre_day_steps), sort(a[.(gr$person_id, gr$prev_obs_date), w]))
+  expect_equal(sort(g$w_pre_day_steps), sort(a[.(gr$person_id, gr$prev_obs_date - 1L), w]))        # the last full day d - 1
+  expect_equal(sort(g$alt_w_pre_day_steps), sort(a[.(gr$person_id, gr$prev_obs_date), w]))
   # the full-period variant: the days after a gap are the plain whole-period z-scores
   gf <- build_gap_level_data(fx$inp$day_tables$sleep, fx$inp$day_tables$activity, fx$inp$persons, fx$cfg, standardization = "full_period")
   full <- predictor_table(fx$inp$day_tables$activity, "act_steps", fx$cfg, trailing = FALSE, keep_x = FALSE, standardization = "full_period")
@@ -98,20 +106,22 @@ test_that("a failure in model C leaves model B untouched, is recorded, and is re
   st <- suppressWarnings(suppressMessages(run_gap_stage("sleep", broken, fx$cfg, ck, dk)))
   expect_true(all(st[grepl("^B_", names(st))] == "computed")); expect_true(all(st[grepl("^C_", names(st))] == "failed"))
   r <- collect_gap_results(ck, fx$cfg, list(sleep = dk))
-  expect_equal(nrow(r$model_B_post_gap_activity), 6L); expect_equal(nrow(r$model_C_gap_length), 0L)     # the six B specifications (incl. the two with MVPA)
-  expect_setequal(r$gap_failures$id, c("C_unadj", "C_adj", "C_adj_mvpa")); expect_true(all(nzchar(r$gap_failures$error)))
+  nB <- sum(vapply(gap_unit_specs(), function(sp) identical(sp$model, "B") && !identical(sp$standardization, "full_period"), logical(1)))
+  expect_equal(nrow(r$model_B_post_gap_activity), nB); expect_equal(nrow(r$model_C_gap_length), 0L)     # every B specification (incl. MVPA and the predictor-day sensitivity units)
+  cids <- names(gap_unit_specs())[vapply(gap_unit_specs(), function(sp) identical(sp$model, "C") && !identical(sp$standardization, "full_period"), logical(1))]
+  expect_setequal(r$gap_failures$id, cids); expect_true(all(nzchar(r$gap_failures$error)))
 
   st2 <- suppressWarnings(suppressMessages(run_gap_stage("sleep", lazy(function() gap_data_for(fx, "sleep")), fx$cfg, ck, dk)))
   expect_true(all(st2[grepl("^B_", names(st2))] == "resumed")); expect_true(all(st2[grepl("^C_", names(st2))] == "computed"))
   r2 <- collect_gap_results(ck, fx$cfg, list(sleep = dk))
-  expect_equal(nrow(r2$gap_failures), 0L); expect_equal(nrow(r2$model_C_gap_length), 3L)
+  expect_equal(nrow(r2$gap_failures), 0L); expect_equal(nrow(r2$model_C_gap_length), length(cids))
 })
 
 test_that("results collect into tables, curves and predicted probabilities that are coherent", {
   fx <- gap_fixture(); ck <- tempfile(); dk <- data_key(fx$store, "sleep")
   suppressWarnings(suppressMessages(run_gap_stage("sleep", lazy(function() gap_data_for(fx, "sleep")), fx$cfg, ck, dk)))
   r <- collect_gap_results(ck, fx$cfg, list(sleep = dk))
-  expect_setequal(r$model_B_post_gap_activity$model_id, c("B_back2_unadj", "B_back2_adj", "B_back2_adj_pre", "B_back1_adj", "B_back2_adj_mvpa", "B_back2_adj_pre_mvpa"))
+  expect_true(all(c("B_back2_unadj", "B_back2_adj", "B_back2_adj_pre", "B_back1_adj", "B_back2_adj_mvpa", "B_back2_adj_pre_mvpa", "B_back2_adj_dbg_all", "B_back2_adj_same_full", "B_back2_adj_same_dbg") %in% r$model_B_post_gap_activity$model_id))
   expect_true(all(c("converged", "singular", "status", "note") %in% names(r$model_B_post_gap_activity)))
   cv <- r$model_B_curve[model_id == "B_back2_unadj"]
   expect_equal(nrow(cv), fx$cfg$predict$gap_curve_max); expect_true(all(cv$lo < cv$est & cv$est < cv$hi))
@@ -210,18 +220,19 @@ test_that("the full-period sensitivity units of models B and C are fitted from t
 
 # ---- MVPA before the gap as a covariate of models B and C ----------------------------------------------------------------
 
-test_that("MVPA is aligned with the day before the gap: the MVPA z-score of the last observed day, against the usual BEFORE that day (never a day after the gap)", {
+test_that("MVPA is aligned with the last full day before the gap (d - 1): its MVPA z-score against the usual BEFORE that day (never a day after the gap)", {
   fx <- gap_fixture(); g <- gap_data_for(fx, "activity"); act <- fx$inp$day_tables$activity; gr <- get_gap_runs(act)
   pt <- predictor_table(act, c("act_steps", "act_mvpa"), fx$cfg, trailing = FALSE, keep_x = TRUE)
   setkey(pt, person_id, date)
   i <- which(!is.na(g$w_pre_day_mvpa))[c(1, 50, 120)]
   for (j in i) {
-    row <- gr[person_id == g$person_id[j] & gap_length == g$gap_length[j]][1]
-    pre  <- pt[.(row$person_id, row$prev_obs_date)]; post <- pt[.(row$person_id, row$next_obs_date)]
-    expect_equal(g$w_pre_day_mvpa[j], pre$w_act_mvpa)                                   # MVPA of the day before the gap
+    row <- gr[j]
+    pre  <- pt[.(row$person_id, row$prev_obs_date - 1L)]; post <- pt[.(row$person_id, row$next_obs_date)]
+    expect_equal(g$w_pre_day_mvpa[j], pre$w_act_mvpa)                                   # MVPA of the last full day before the gap
+    expect_equal(g$alt_w_pre_day_mvpa[j], pt[.(row$person_id, row$prev_obs_date)]$w_act_mvpa)    # the sensitivity column: the last recorded day d
     expect_false(isTRUE(all.equal(g$w_pre_day_mvpa[j], post$w_act_mvpa)))               # not the day the person comes back
     # by hand: the day's log1p(MVPA) minus the mean of the person's EARLIER days, in units of the pooled within-person SD
-    x <- log1p(act[person_id == row$person_id & date <= row$prev_obs_date, mvpa_minutes]); n <- length(x)
+    x <- log1p(act[person_id == row$person_id & date <= row$prev_obs_date - 1L, mvpa_minutes]); n <- length(x)
     sdw <- attr(pt, "scales")[predictor == "act_mvpa", sd_within]
     expect_equal(g$w_pre_day_mvpa[j], (x[n] - mean(x[-n])) / sdw)
   }
@@ -256,7 +267,7 @@ test_that("adding MVPA changes nothing in the existing specifications: same rows
   b1 <- fit_gap_dose_response(g[, !"w_pre_day_mvpa"], fx$cfg, "back2_dev", TRUE, FALSE, "B_back2_adj")          # the same fit on a table without the MVPA column
   expect_equal(b0$coef$estimate, b1$coef$estimate); expect_equal(b0$coef$n_gaps, b1$coef$n_gaps); expect_false(b0$coef$adjust_mvpa)
   expect_equal(b0$coef$n_gaps_no_mvpa, 0L)
-  expect_equal(names(gap_unit_specs())[!grepl("mvpa", names(gap_unit_specs()))],
+  expect_equal(grep("_dbg_all$|_same_|_both_days$", grep("mvpa", names(gap_unit_specs()), invert = TRUE, value = TRUE), invert = TRUE, value = TRUE),
                c("B_back2_unadj", "B_back2_adj", "B_back2_adj_pre", "B_back1_adj", "B_back2_adj_fullperiod", "B_observed_trajectory", "C_unadj", "C_adj", "C_adj_fullperiod"))
   expect_null(gap_unit_specs()$B_back2_adj$adjust_mvpa)                 # the old specifications are untouched (so their checkpoints stay valid)
   expect_equal(gap_unit_specs()$C_adj_mvpa, list(model = "C", adjusted = TRUE, adjust_mvpa = TRUE))
@@ -312,4 +323,68 @@ test_that("gap_mvpa_effects lists the MVPA term and the main terms with and with
   expect_true(all(m[model == "B" & term == "w_pre_day_mvpa", !is.na(vif_equiv)]))
   expect_true(all(m$n_gaps > 0))
   if (any(m$model == "C")) expect_equal(m[model == "C" & !is.na(or), or], exp(m[model == "C" & !is.na(or), estimate]))
+})
+
+# ---- the last full day in models B and C ----------------------------------------------------------------------------------------
+
+test_that("gap_day_view: the primary day is the table as it is; the other day puts the alt_ columns in place; same_rows keeps the gaps that have both", {
+  fx <- gap_fixture(); g <- gap_data_for(fx, "sleep"); cfg <- fx$cfg
+  expect_equal(cfg$gap_models$predictor_day, "last_full_day"); expect_equal(gap_predictor_lag(cfg), 1L)
+  v0 <- gap_day_view(g, cfg, c("back2_dev", "w_pre_day_steps")); expect_equal(nrow(v0), nrow(g)); expect_equal(v0$back2_dev, g$back2_dev)
+  v1 <- gap_day_view(g, cfg, c("back2_dev", "w_pre_day_steps"), "day_before_gap")
+  expect_equal(v1$back2_dev, g$alt_back2_dev); expect_equal(v1$w_pre_day_steps, g$alt_w_pre_day_steps); expect_equal(nrow(v1), nrow(g))
+  vs <- gap_day_view(g, cfg, c("back2_dev", "w_pre_day_steps"), "day_before_gap", same_rows = TRUE)
+  ok <- complete.cases(g[, .(back2_dev, w_pre_day_steps, alt_back2_dev, alt_w_pre_day_steps)])
+  expect_equal(nrow(vs), sum(ok)); expect_lt(nrow(vs), sum(!is.na(g$alt_back2_dev) & !is.na(g$alt_w_pre_day_steps)))   # the all-gaps analysis of d has more gaps
+  expect_true(all(!is.na(vs$back2_dev) & !is.na(vs$w_pre_day_steps)))
+  expect_error(gap_day_view(g, cfg, "back2_dev", "nope"), "unknown predictor day")
+  cfg2 <- cfg; cfg2$gap_models$predictor_day <- "day_before_gap"; expect_equal(gap_predictor_lag(cfg2), 0L)    # the old definition by configuration
+  g2 <- build_gap_level_data(fx$inp$day_tables$sleep, fx$inp$day_tables$activity, fx$inp$persons, cfg2)
+  expect_equal(g2$w_pre_day_steps, g$alt_w_pre_day_steps); expect_equal(g2$back2_dev, g$alt_back2_dev); expect_equal(g2$alt_back2_dev, g$back2_dev)
+  # a gap needs a record on d - 1: the first record after an earlier gap has none, so those gaps have no primary exposure
+  expect_gt(sum(is.na(g$w_pre_day_steps) & !is.na(g$alt_w_pre_day_steps)), 0L)
+  # the run-in analysis looks at the study day of the predictor day (d - 1)
+  expect_equal(g2$prev_study_day - g$prev_study_day, rep(1L, nrow(g)), ignore_attr = TRUE)
+})
+
+test_that("with a partial last day and NO true effect, model C finds the association on day d and not on the last full day d - 1; the joint model tells them apart", {
+  cfg <- cfg_test(); cfg$gap_models$min_gaps <- 30L
+  inp <- suppressMessages(simulate_inputs(cfg, n_per_cohort = c(Insomnia = 150, Diabetes = 150, Healthy = 250, Prostate = 80), beta = 0, seed = 17))
+  act <- copy(inp$day_tables$activity); setorder(act, person_id, date)
+  act[, next_date := shift(date, type = "lead"), by = person_id]
+  last_day <- !is.na(act$next_date) & as.integer(act$next_date - act$date) > 1L                    # a gap follows this day
+  # the device was taken off during the day: fewer steps, and the more so the longer the gap that follows (a technical artifact that mimics "low activity -> longer gap")
+  gl <- as.integer(act$next_date - act$date) - 1L
+  set.seed(6); act[last_day, steps := steps * pmax(0.1, 0.85 - 0.1 * log2(gl[last_day]) + stats::runif(sum(last_day), -0.2, 0.2))]
+  act[, next_date := NULL]
+  g <- build_gap_level_data(act, act, inp$persons, cfg)
+  d1 <- suppressWarnings(suppressMessages(fit_gap_length_ordinal(g, cfg, TRUE, "C_adj_same_full", day = "last_full_day", same_rows = TRUE)))$coef
+  d0 <- suppressWarnings(suppressMessages(fit_gap_length_ordinal(g, cfg, TRUE, "C_adj_same_dbg", day = "day_before_gap", same_rows = TRUE)))$coef
+  expect_equal(d1$n_gaps, d0$n_gaps)                                                                  # identical gaps
+  expect_true(d0$status %in% c("ok", "ok_bootstrap_se")); expect_lt(d0$estimate, -0.2); expect_lt(d0$p, 1e-4)     # the artifact: more active day d -> shorter gap
+  expect_gt(d1$p, 0.01)                                                                               # not on the last full day
+  bo <- suppressWarnings(suppressMessages(fit_gap_length_ordinal(g, cfg, TRUE, "C_adj_both_days", day = "both")))$coef
+  expect_equal(bo$n_gaps, d1$n_gaps); expect_true(all(c("b_full", "v_full", "b_dbg", "v_dbg", "cov_full_dbg") %in% names(bo)))
+  expect_gt(bo$b_full - bo$b_dbg, 0)                                                                  # the day before the gap carries the (negative) association
+  tab <- build_gap_day_check(data.table(), cbind(stream = "activity", rbindlist(list(d1, d0, bo), fill = TRUE)))
+  expect_true(all(c("primary", "same_dbg", "both_full", "both_dbg", "difference") %in% as.character(tab$variant)) || !"primary" %in% as.character(tab$variant))
+  df <- tab[as.character(variant) == "difference"]
+  expect_equal(nrow(df), 1L); expect_lt(df$p, 0.05); expect_equal(df$p_holm, df$p)
+})
+
+test_that("the predictor-day check of B and C: table, figures, captions and the report step", {
+  fx <- gap_fixture(); ck <- tempfile(); dk <- data_key(fx$store, "sleep")
+  suppressWarnings(suppressMessages(run_gap_stage("sleep", lazy(function() gap_data_for(fx, "sleep")), fx$cfg, ck, dk)))
+  r <- collect_gap_results(ck, fx$cfg, list(sleep = dk))
+  tab <- r$gap_day_check
+  expect_true(all(c("stream", "model", "spec", "variant", "variant_label", "estimate", "se", "n_gaps", "p") %in% names(tab)))
+  tb <- tab[model == "B" & spec == "Adjusted"]
+  expect_true(all(c("primary", "same_full", "same_dbg", "dbg_all") %in% as.character(tb$variant)))
+  expect_equal(tb[variant == "same_full", n_gaps], tb[variant == "same_dbg", n_gaps])                 # identical gaps in the same-rows pair
+  expect_gte(tb[variant == "dbg_all", n_gaps], tb[variant == "same_dbg", n_gaps])
+  expect_equal(tb[variant == "primary", estimate], r$model_B_post_gap_activity[model_id == "B_back2_adj" & term == "log2_gap", estimate])
+  p <- plot_gap_day_check(tab, "sleep", fx$cfg, "B"); expect_silent(suppressWarnings(ggplot2::ggplot_build(p)))
+  expect_null(plot_gap_day_check(tab, "hr", fx$cfg, "B"))
+  expect_equal(figure_analysis("gapB_day_check_sleep")$step, 6L); expect_equal(table_analysis("gap_day_check")$step, 6L)
+  expect_match(caption_for("gapC_day_check_sleep"), "partial"); expect_match(caption_for("gapB_day_check_activity"), "last FULL day")
 })

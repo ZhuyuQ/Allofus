@@ -71,8 +71,8 @@ figure_analysis <- function(name) {
     c("^outcome_by_variable",                  "1", "Descriptive statistics: outcome by model variable", "descriptive (person level)"),
     c("^runin_",                               "5", "Run-in analysis: wear in the first days and later gaps", "gap onset / model B / model C after the run-in"),
     c("^collinearity_",                        "7", "Model diagnostics",                       "all models (GVIF)"),
-    c("^sensitivity_|^forest_sensitivity",     "6", "Sensitivity analyses",                    "gap onset (primary model, alternative assumptions)"),
-    c("^onset_|^risk_curve|^cohort_forest|^forest_gap_definition|^gap_definition_|^exploratory_grid_", "4", "Primary models: gap onset", "gap onset (primary, model D, exploratory)"),
+    c("^sensitivity_|^forest_sensitivity|^day_check_|^day_pattern_|^gapB_day_check_|^gapC_day_check_", "6", "Sensitivity analyses",             "gap onset (primary model, alternative assumptions; predictor-day check)"),
+    c("^onset_|^risk_curve|^cohort_forest|^forest_gap_definition|^gap_definition_|^exploratory_grid_|^pre_gap_activity_observed_", "4", "Primary models: gap onset", "gap onset (primary, model D, exploratory)"),
     c("^gapB_|^gap_dose_response|^post_gap_activity_observed_", "4", "Primary models: gap-level activity after a gap", "model B"),
     c("^gapC_|^gap_length_probs",              "4", "Primary models: gap-level gap length",    "model C"),
     c("^transition$|^missing_by_",             "2", "Temporal patterns of missingness",        "descriptive / temporal"),
@@ -88,7 +88,7 @@ table_analysis <- function(name) {
     c("collinearity|term_tests|^unit_|^checkpoint_|failures",  "7", "Model diagnostics and run status"),
     c("^device_",                                              "3", "Data quality: device version"),
     c("^outcome_variable",                                     "1", "Descriptive statistics: outcome by model variable"),
-    c("^sensitivity",                                          "6", "Sensitivity analyses"),
+    c("^sensitivity|^day_check|^day_pattern|^gap_day_check",                               "6", "Sensitivity analyses"),
     c("^onset_|^primary_test|^vif$|^cohort_interaction|^cohort_specific|^risk_unadjusted", "4", "Primary models: gap onset"),
     c("^model_B",                                              "4", "Primary models: gap-level activity after a gap (model B)"),
     c("^model_C",                                              "4", "Primary models: gap-level gap length (model C)"),
@@ -135,7 +135,7 @@ write_results_summary <- function(res, cfg, outdir) {
   fmt_or <- function(or, lo, hi) sprintf("%.2f (%.2f-%.2f)", or, lo, hi)
   if (!is.null(res$primary_test) && nrow(res$primary_test) > 0L) {
     L <- c(L, "## Gap onset (primary model, gap >= 1 day)",
-           "Odds that a gap starts tomorrow per +1 SD higher than the person's usual steps yesterday (OR < 1 = higher activity before fewer gaps; OR > 1 = higher activity before more gaps).",
+           "Odds that a gap starts tomorrow per +1 SD higher than the person's usual steps on the last full day (the calendar day before the last day with a record before the gap) (OR < 1 = higher activity before fewer gaps; OR > 1 = higher activity before more gaps).",
            res$primary_test[, sprintf("* %s: OR %s, p=%s, Holm p=%s [%s, %s events]", stream, fmt_or(or, or_low, or_high),
                                       signif(p, 3), signif(p_holm, 3), status, format(n_events, big.mark = ","))], "")
   }
@@ -185,7 +185,7 @@ write_results_summary <- function(res, cfg, outdir) {
   if (!is.null(M) && nrow(M) > 0L && any(M$term == "w_pre_day_mvpa")) {
     m <- M[term == "w_pre_day_mvpa"]
     L <- c(L, "## MVPA before the gap as a covariate of models B and C (exploratory)",
-           "MVPA minutes (log) on the last observed day before the gap, against the person's usual before that day, per +1 SD higher. Model B: change in activity on the first full day back (SD of the person's usual steps); model C: odds ratio of a longer gap.",
+           "MVPA minutes (log) on the last full day before the gap (d - 1), against the person's usual before that day, per +1 SD higher. Model B: change in activity on the first full day back (SD of the person's usual steps); model C: odds ratio of a longer gap.",
            m[, sprintf("* model %s %s, %s: %s (95%% CI %s to %s), p=%s [%s]", model, model_id, stream,
                        ifelse(model == "C", sprintf("OR %.2f", or), sprintf("%.3f", estimate)),
                        ifelse(model == "C", sprintf("%.2f", exp(conf_low)), sprintf("%.3f", conf_low)),

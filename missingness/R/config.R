@@ -138,7 +138,7 @@ make_config <- function(overrides = list()) {
     # ---- run-in analysis: wear in the FIRST days of follow-up as a predictor of LATER gaps ---------------------------
     # The first `days` days of each person's follow-up (study days 1..days, counted in the modelled stream) are the run-in.
     # missing days in the run-in = days - observed days among them. Everything the run-in analysis models starts AFTER the run-in
-    # (prior days with study_day > days; for models B and C, gaps whose last observed day before them is after the run-in), so the
+    # (rows whose predictor day, the last full day d - 1, has study_day > days; for models B and C, gaps whose last observed day before them is after the run-in), so the
     # run-in measure is always earlier than the outcome it is related to. Whole-period coverage is never used (it contains the outcome).
     #   cov0 = log2(1 + missing days in the run-in), centred at its mean over the analysed people (per doubling of 1 + missing days)
     #   categories (shape check): upper bounds of the groups 0 | 1 | 2-3 | >=4 missing days; reference = 0
@@ -150,6 +150,9 @@ make_config <- function(overrides = list()) {
     # ---- onset-model settings ------------------------------------------------
     onset = list(
       primary_k         = 1L,              # a gap = at least 1 missing day
+      # the day the predictors are read from. d = the last day with a record before a possible gap (the gap starts on d + 1); the device may be taken off
+      # during d, so d can be a partial day. "last_full_day" (primary): the calendar day d - 1. "day_before_gap": day d (sensitivity analysis).
+      predictor_day     = "last_full_day",
       secondary_k       = c(2L, 3L, 7L),   # model D: stricter gap definitions
       trailing_n        = 14L,             # trailing baseline = last 14 observed days
       trailing_min_n    = 7L,              # ... needing at least 7 of them
@@ -196,7 +199,10 @@ make_config <- function(overrides = list()) {
       length_bins   = c(1L, 2L, 3L, 4L, 8L, 15L),   # -> "1","2","3","4-7","8-14","15+"
       po_alpha      = 0.05,                         # proportional-odds test level
       min_gaps      = 100L,                         # fewer gaps than this -> "not_estimable"
-      min_bin_n     = 20L                           # length groups with fewer gaps are merged downwards
+      min_bin_n     = 20L,                          # length groups with fewer gaps are merged downwards
+      # the day before a gap the models refer to: the last FULL day d - 1 ("last_full_day", primary; the last recorded day d may be a partial day) or the last
+      # recorded day d ("day_before_gap", the sensitivity analysis). Exposure of C, pre-gap covariates of B and the usual the days after a gap are standardized with.
+      predictor_day = "last_full_day"
     ),
 
     # ---- uncertainty ---------------------------------------------------------

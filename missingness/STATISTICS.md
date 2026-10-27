@@ -173,11 +173,14 @@ were dropped by the ETL and are listed in `dropped_columns.tsv`.
 
 One row per **observed day d** of a person, except the person's last observed day. Outcome
 `y_ge{k} = 1` if a gap of **at least k days starts on day d+1** (`next observed date - d - 1 >= k`); otherwise 0.
-Primary definition k = 1 ("the next day is missing"); alternatives k = 2, 3, 7. The predictors on row d are
-the values of **day d itself**, i.e. the day before the possible gap; there is no information from d+1 or later
-in the pairing (a unit test checks the pairing against an independently built calendar). The risk set is "common":
-a row is kept only if **all** predictors of that stream are non-missing, so univariate, multivariate and joint
-models use identical rows.
+Primary definition k = 1 ("the next day is missing"); alternatives k = 2, 3, 7. Day d is the **last day with a record before the possible gap**, and the device may have been
+taken off during it, so d can be a partial day (its steps low for a technical reason, which would create the association "low steps -> gap tomorrow" without any change in behaviour).
+The **predictors of the primary model are therefore those of the last FULL day, `d - 1`, the calendar day before d** (the mirror image of model B, whose outcome is the first full
+day back, `r + 1`, not the partial day of the return, `r`); `cfg$onset$predictor_day = "last_full_day"`. A row whose day `d - 1` has no record (d is the person's first record, or the first day
+after an earlier gap) or has incomplete predictors is not in the model. The predictors of the day right before the gap (d) are the **sensitivity analysis** `day_before_gap` (section 6.1).
+Standardization is unchanged: the usual of day `d - 1` is the mean of the person's days strictly before `d - 1`, so there is no information from d or later in the predictors; the adjusters (weekday,
+time in study, gap history) are those of row d (weekday of d is one-to-one with the weekday of `d - 1`; no gap lies between `d - 1` and d). A unit test checks the pairing against an independently built calendar.
+The risk set is "common": a row is kept only if **all** predictors of that stream are non-missing on the predictor day, so univariate, multivariate and joint models use identical rows.
 
 ### 5.2 Predictors [`predictors.R`, `config.R`]
 
@@ -206,6 +209,19 @@ and the deviation from it**, and each part is put on a standard scale:
   `baseline_min_n` = 7 of them; a day without a baseline has no z-score and is not in the model. Only data observed before day d - hence
   before any gap that starts on day d+1 - enter the person's usual, so the z-scores carry no information from the person's future
   (checked by a unit test that changes a person's later values and finds the earlier deviations unchanged).
+* **Which days make the usual (the reference-set rule, `restrict_to_stream_days()`): match the reference to the day it is applied to.** The within-person deviation is a
+  within-between centering, and it is only a pure within-person deviation if the person's mean is taken over the same kind of observations as the rows of the model.
+  - *Onset model* (rows = days observed in the modelled stream) and *model C / the pre-gap covariate of model B* (the day before a gap is a day observed in the stream): for the **sleep and
+    heart-rate streams the activity predictors are standardized against the person's days observed in that stream**, not against all activity days. With all activity days the
+    reference contains the days without a record in the stream (the person's own gap days), which are more often partial-wear days with fewer steps: the shift
+    `(usual on stream days - usual on all days) / SD` is **not a constant** - it varies by person (with the person's share of missing days, i.e. with the outcome) and over time, so it is not absorbed
+    by the intercept and contaminates the within-person term with a person-level, outcome-related component. In a simulation with a planted effect of -0.5 the stream-day reference recovered -0.500, the
+    all-days reference gave -0.773 and distorted the between-person term; the person-level part of the shift correlated 0.68 with the person's gap rate. The size in real data is unknown (it depends on how
+    different the days without a record are); the visible symptom is a mean z-score above 0 on all analysed days (+0.15 SD on the sleep pre-gap figure before this rule).
+  - *Outcome of model B* (activity on the days after a gap): any activity-observed day, with the usual (through the last day before the gap) built from **all activity days** - again the same
+    kind of day. Requiring a record of the stream on the days after the gap would select on what happens after the gap (a new gap) and is not done.
+  The activity stream is unchanged (its own days are the activity days). The data key of the sleep and heart-rate checkpoints carries this rule (`activity_reference = "stream_days_v2"`), so results
+  made with the earlier reference are never reused; the activity stream's checkpoints stay valid.
 * **Reference distributions.** `sd_w` = root mean square of `x - m` over all days that have a baseline (the pooled within-person SD about the
   prior usual; **reference distribution of w: within-person deviations from the prior usual, pooled over people and days**); `mu_b`, `sd_b` = mean and SD
   of `m` over the same days (**reference distribution of b: the person-level prior usual, weighted by person-days**). These are three constants per
@@ -274,12 +290,23 @@ adjusted (`role = exploratory`); **primary** = joint predictors, adjusted, k = 1
   `w_term x cohort` (`chisq`, `df`, `p`); `cohort_specific`: the primary term fitted **within each cohort** separately
   (cohorts without enough events are reported as not estimable).
 * **Absolute risk** (`risk_unadjusted`): from the **unadjusted joint** k = 1 model, the population-average probability
-  that a gap starts tomorrow when yesterday's `w` for the primary term is -1, 0, +1 SD (all other predictors at their average),
+  that a gap starts tomorrow when the `w` of the last full day (`d - 1`) for the primary term is -1, 0, +1 SD (all other predictors at their average),
   `mean over u of plogis(b0 + b1 a + u)` with `u ~ N(0, sigma2)` integrated on a 201-point grid. The interval (`risk_low`, `risk_high`)
   comes from 2,000 draws of (`b0`, `b1`) from their joint normal distribution; `sigma2` is held fixed, so it reflects
   intercept and slope uncertainty only.
 
 Note: in every adjusted model `cohort` is coded with **Healthy as the reference** (`cfg$reference_cohort`; changing it makes all stored model results stale).
+
+### 5.1 Observed steps before a gap (`onset_pre_gap_trajectory`, figure `pre_gap_activity_observed_<stream>`)
+
+The counterpart of the observed post-gap activity of model B (section 7), model-free and unadjusted. For every day `d` with a record, the within-person steps z-score (against the person's
+usual **before that day** on the days observed in this stream, i.e. the value the onset model reads) on the days `d - j`, `j = 0 .. 7`. **The figure draws only the days followed by a gap** (one line per gap-length panel);
+the controls (all other days) and the difference are in the table. **Events** = days `d` followed by a gap (the gap starts on `d + 1`), shown by the length of
+that gap (1, 2, 3, 4-7, 8-14 days, all gaps; the length is known only afterwards and describes the events, never a predictor); **controls** = every other day `d`. A day `d - j` without a record
+has no z-score and is left out of that mean (the number of gaps per day is in the table and the panel title). Intervals: person-clustered ratio estimator (`cluster_mean_ci`); the **difference**
+events minus controls per day uses the linearised cluster-robust variance of two means from the same people (`cluster_diff_ci`: `g/(g-1) * sum_i (u1_i - u0_i)^2`), Holm over the 8 days within stream and
+group (`p_holm`). It shows the **shape** of the association that the odds ratio summarises: a decline that builds over several days (behavioural) or a drop on day 0 only (partial last day, see 6.1).
+It is descriptive; nothing here is adjusted for the covariates of the model.
 
 ## 6. Sensitivity analyses of the primary effect [`sensitivity.R`]
 
@@ -297,6 +324,7 @@ sensitivity analysis (the spline and random-slope analyses are tests and are not
 | `exclude_partial_wear` | drops rows whose previous day looks like partial wear (steps < 500 or sedentary >= 1380 min; sleep: minutes in bed < 60; heart rate: total minutes < 1200) |
 | `first_gap_only` | only days up to and including each person's first gap onset (at most one event per person; no gap history) |
 | `main_sleep_only` | sleep only: a night counts as observed only if a main sleep exists (naps alone do not count) |
+| `day_before_gap`, `last_full_day_same_rows`, `day_before_gap_same_rows`, `both_days` | the **predictor-day check**: the predictors of the day right before the gap (d) instead of the last full day (d - 1), see 6.1 |
 | `conditional_logit` | `survival::clogit` with `strata(person_id)`, Efron approximation, persons with >= 1 event only; time-invariant terms (cohort, age, sex, `b_`) cancel. No random-effect assumption. (Before this revision the formula was written `survival::strata(person_id)`, which survival does not recognise as the stratification special: the person ids then entered as dummy covariates. This was corrected; earlier conditional-logit numbers should not be compared.) |
 | `cluster_robust_logit` | pooled logistic regression without random effect, person-clustered sandwich standard errors (`sandwich::vcovCL`) |
 | `spline_vs_linear` | LRT replacing the linear `w` term by a natural spline with 3 df (2 extra df); small p: non-linear. Reported in `p` and the note (`chisq`, `df`), no OR |
@@ -304,6 +332,46 @@ sensitivity analysis (the spline and random-slope analyses are tests and are not
 
 Estimates from different estimators are comparable on the log-odds scale of the same term; the conditional logit
 estimates a within-person effect and need not equal the random-intercept estimate exactly.
+
+### 6.1 The predictor-day check (is the association carried by a partial last day?)
+
+**Problem.** A row of the onset model is a day `d` with a record, and the outcome is "a gap starts on `d + 1`". Day `d` is therefore the **last day with a record before the gap**, and
+the device may have been taken off during it: its steps are then low for a technical reason, which creates the association "low steps -> gap tomorrow" without any change in behaviour.
+`exclude_partial_wear` does not remove this (it drops only days under a threshold of the exposure itself, which is selection on the exposure, and partial days above it remain).
+Model B (section 7) meets the same problem after a gap: the first day back (`r`) is often partial, so its primary outcome is the **first full day**, the calendar day `r + 1`.
+
+**Primary model (the mirror image).** The **last full day before the gap is `d - 1`, the calendar day before the last day with a record**, and the primary onset model (and every model of the onset family:
+exploratory grid, model D, cohort-specific fits, the unadjusted risk-curve model, the run-in onset models, the sensitivity analyses and the deciles) reads its predictors from it. It needs a record itself
+(the device recorded on `d - 1` and again on `d`); a row whose day `d` follows an earlier gap (or is the first record) has no day `d - 1` and is not in the model.
+
+**Sensitivity analyses: the day right before the gap (`d`).** The earlier primary model is kept as a sensitivity analysis, together with the clean comparisons on identical rows
+(a record on `d` and on `d - 1`, complete predictors on both days; standardization before each day as in the primary model, so nothing from the future enters):
+
+| analysis | predictors (within `w_` and between `b_` of every predictor of the stream) | question |
+|---|---|---|
+| `day_before_gap` | day `d`, every row with complete predictors on `d` (a few more rows than the primary model) | the earlier primary model |
+| `last_full_day_same_rows` | day `d - 1`, on the rows that have both days | the primary model on the rows of the comparison (separates the effect of the row restriction from the effect of the day) |
+| `day_before_gap_same_rows` | day `d`, on the same rows | the effect of the day alone: same rows, same outcome, only the predictor day differs |
+| `both_days` | day `d`, plus the primary term on day `d - 1` (`lag1_w_act_steps`) in one model | the effect of `d - 1` given `d`, and the **Wald test of the difference** `b_d - b_(d-1)` |
+
+**Reading.** A lag of one more day lowers the association even for a real behavioural effect, because activity on consecutive days is correlated (`rho`), so the two single-day estimates alone cannot separate the
+explanations. The check therefore reports (`day_check`, `day_descriptive`, `day_pattern`):
+1. the joint model and the Wald test of `b_d - b_(d-1)` (variance `v_d + v_(d-1) - 2 cov`, from the fit; also as a ratio of odds ratios), Holm over the streams;
+2. the observed mean steps z-score on `d` and on `d - 1` by whether a gap starts on `d + 1`, with the **change from `d - 1` to `d`**: a partial last day shows as a drop at `d` that is larger before a gap
+   (difference of means with a cluster-robust CR1 sandwich interval, people as clusters; `day_contrast`);
+3. the ratio of the estimate on `d - 1` to the estimate on `d` (same rows) against `rho`, the correlation of the two days' z-scores (if all the association were carried by persistence, the ratio would be about `rho`).
+If the association is a partial-day artifact, `day_before_gap` shows a (stronger) association that the primary model does not; if it is behavioural, both show it, the one on `d` somewhat stronger.
+**What it cannot show:** day `d - 1` can itself be partial, and day `d` can be low for a behavioural reason (illness) that also ends the wear; a positive coefficient on `d - 1` in the joint model can arise from
+the measurement noise of `d` (suppression). The check is an association check, not proof. Figures: `day_check_<stream>` (forest of the six fits, statistics below) and `day_pattern_<stream>`.
+**Models B and C (and every unit of them) follow the same rule** (`cfg$gap_models$predictor_day = "last_full_day"`): the exposure of model C and the pre-gap covariates of model B (`w_pre_day_steps`,
+`w_pre_day_mvpa`) are those of the last FULL day `d - 1` (against the usual strictly before `d - 1`, on the days observed in the modelled stream), and the usual against which the days AFTER the gap are
+standardized (the outcome of model B) is the person's mean **through `d - 1`**, so the possibly partial day `d` enters nowhere. A gap needs an activity record on `d - 1` (the usual through that day); the
+exposure of C and the pre-gap covariates of B also need a record of the modelled stream on `d - 1`; a gap whose day `d` is the first record or the first day after an earlier gap has no `d - 1` and is not in
+the primary models. The day right before the gap (`d`) is the sensitivity analysis of these models (`alt_*` columns of the gap table): `*_dbg_all` (every gap that has `d`, the earlier primary analysis),
+`*_same_full` / `*_same_dbg` (exactly the gaps that have both days, `d - 1` / `d`: only the day differs) for `B_back2_adj`, `B_back2_adj_pre` and `C_adj`, and `C_adj_both_days` (both days as exposures in one
+model; Wald test of `b_(d-1) - b_d`, variance `v + v' - 2 cov`, Holm over the streams). The single-day B and C fits are separate fits and have no covariance, so there is no test of their difference; the joint
+model of C is the test. Table `gap_day_check`, figures `gapB_day_check_<stream>`, `gapC_day_check_<stream>`. The run-in analysis uses the study day of the predictor day (`d - 1`).
+
 
 ## 7. Gap-length models B and C (exploratory) [`gap_models.R`]
 
@@ -315,9 +383,9 @@ expected to be empty; sparse groups (< 20 gaps) are merged into the next shorter
 **Model B - "is activity lower after longer gaps?"** Linear mixed model (`lme4::lmer`, REML):
 `outcome ~ log2(gap length) [+ prior-day deviation] [+ cohort + age10 + sex] + (1 | person_id)`.
 Outcome: the z-score of log(1 + steps) on the **first full day back** (`next observed date + 1`, primary), or on the first
-day back (sensitivity; the watch is often put on mid-day), **against the person's usual THROUGH the last observed day before the gap** (pre-gap
-standardization: `(x_post - m_through_prev_day) / sd_w`; 0 = the person's usual before the gap, + = more steps) - so the outcome is the change relative to
-data observed before the gap. The pre-gap day itself enters as `w_pre_day_steps` (against the usual before that day). Gaps with fewer than
+day back (sensitivity; the watch is often put on mid-day), **against the person's usual THROUGH the last full day before the gap, `d - 1`** (pre-gap
+standardization: `(x_post - m_through_d-1) / sd_w`; 0 = the person's usual before the gap, + = more steps) - so the outcome is the change relative to
+data observed before the gap. The last full day before the gap itself enters as `w_pre_day_steps` (against the usual before that day). Gaps with fewer than
 7 observed days before them have no baseline and are not in the models. The full-period sensitivity (`B_back2_adj_fullperiod`, `C_adj_fullperiod`)
 uses whole-period z-scores for the pre-gap day and the days back. Four specifications: unadjusted; adjusted; adjusted + the pre-gap
 deviation (change from before to after); first-day-back outcome adjusted. **Effect size**: `estimate` = change in the
@@ -333,7 +401,7 @@ Figures: `gap_dose_response` draws the fitted straight line (interval from the f
 * **Time origin**: day 0 = the first observed day after the gap (the return day); day k = the calendar day k days after it, **k = 0 ... 7** (an 8-day window).
   A day without an activity record contributes nothing to that k, so the number of gaps and people **decreases with k**; both are in the table and
   in each panel title (day 0).
-* **Value**: z-score of log(1 + steps) against the person's usual through the last day before the gap, in within-person SD units.
+* **Value**: z-score of log(1 + steps) against the person's usual through the last FULL day before the gap (d - 1), in within-person SD units.
 * **Groups**: gap length 1, 2, 3, 4-7, 8-14, 15+ days and all gaps. **Summary**: the mean of the gaps' values, with the person-clustered ratio-estimator
   interval (a person with several gaps is one cluster; `se` = half-width / 1.96; the figure follows `cfg$plot$interval_style`).
 * **Model-based estimates are drawn apart** (red open diamond, day 1 only: the day model B describes): the unadjusted model B value at the group's median
@@ -361,7 +429,7 @@ All earlier specifications, variable definitions and standardization are unchang
 estimate can be read with and without MVPA.
 
 * **Definition (unchanged variable).** MVPA = fairly active + very active minutes of the day (`mvpa_minutes`), transformed `log(1 + x)` (`cfg$predictors$act_mvpa`).
-  Covariate `w_pre_day_mvpa` = that value on the **last observed day before the gap**, minus the mean of the person's earlier observed days (needs >= 7), divided by the
+  Covariate `w_pre_day_mvpa` = that value on the **last full day before the gap (d - 1)**, minus the mean of the person's earlier observed days (needs >= 7), divided by the
   pooled within-person SD of MVPA - exactly the pre-gap standardization of `w_pre_day_steps` (steps), on the same day. Unit: **per +1 SD higher MVPA than the person's usual**.
 * **Alignment with the observation period (checked by tests).** The covariate is measured on the same day as the exposure of model C and the pre-gap covariate of model B, which is
   before the gap starts and therefore before the gap length (model C outcome) and before the days after the gap (model B outcome): no information from the gap or later enters
@@ -395,7 +463,7 @@ intervals: model B in SD units of the activity on the first full day back (per +
 | week / year / weekday shares | pooled missing % (+ bootstrap CI) | none | `study_week_rates`, `calendar_year_rates`, `weekday_rates` |
 | weekday effect | OR vs Sunday (Wald CI) | LRT `chisq`, `df`, `p` (weekday; weekday x cohort) | `weekday_odds_ratios`, `weekday_tests` |
 | metric values by cohort / stratum | median, mean, SD, quartiles | none in tables (KW p in figures) | `metric_summary*` |
-| gap onset (all specs) | `or` per +1 SD higher than usual (+ CI), `estimate` = log-odds | Wald z = `estimate / se`, `p`; primary: `p_holm` | `onset_coefficients` (every fixed effect), `primary_test`; `onset_deciles` = observed gap rate by decile of the primary term |
+| gap onset (all specs) | `or` per +1 SD higher than usual (+ CI), `estimate` = log-odds | Wald z = `estimate / se`, `p`; primary: `p_holm` | `onset_coefficients` (every fixed effect), `primary_test`; `onset_pre_gap_trajectory` = observed steps on the days before a gap (see 5.1), `onset_deciles` = observed gap rate by decile of the primary term |
 | onset heterogeneity | `sigma2`, `mor` | - | `onset_models` |
 | cohort difference in the primary effect | per-cohort OR | LRT `chisq`, `df`, `p` | `cohort_specific`, `cohort_interaction` |
 | absolute risk | % risk at -1, 0, +1 SD (+ interval) | - | `risk_unadjusted` |
@@ -441,8 +509,8 @@ analysis uses only days that lie **before** the days it models.
 * **Run-in** = study days `1..N` of each person in the modelled stream (`cfg$runin$days`, `N = 28`; study day 1 = the first record, which is observed by
   definition). **`m` = missing days in the run-in** = `N - observed days among them` (`runin_person_table()`); NA if the follow-up is shorter than `N` days.
   Days after the run-in never enter `m`: a gap that starts inside the run-in and runs past it counts only its days inside the run-in.
-* **Modelled days.** Onset model: prior days `d` with `study_day > N` of people with a complete run-in (the outcome is a gap starting on `d + 1`); models B and C:
-  gaps whose last observed day before the gap has `study_day > N`. **Every variant of a model uses exactly the same rows.**
+* **Modelled days.** Onset model: rows whose predictor day (the last full day `d - 1`) has `study_day > N`, of people with a complete run-in (the outcome is a gap starting on `d + 1`); models B and C:
+  gaps whose predictor day (the last full day before the gap, d - 1) has `study_day > N`. **Every variant of a model uses exactly the same rows.**
 * **Coding.** `cov0 = log2(1 + m)`, centred at its mean over the *people* analysed (`add_runin_columns()`): one coefficient = per **doubling of (1 + missing days)**; the
   centring keeps the main effect of the steps term the effect at the average run-in and makes the product `steps x cov0` nearly uncorrelated with both terms.
   Why the log scale: most people have `m = 0` (a point mass) and the rest are right-skewed, so a straight line in `m` is dominated by the tail and by the

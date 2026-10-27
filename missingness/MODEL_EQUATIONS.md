@@ -25,7 +25,9 @@ rows collapsed to one row per day). **Gap**: >= 1 consecutive calendar days with
 
 **Standardization (primary = `pre_gap`, `cfg$standardization`).** For the person's day `d` of predictor `p` (transformed value `x`):
 
-    m(d)   = mean of the person's observed x on days BEFORE d          (>= 7 such days, else the day has no z-score)
+    m(d)   = mean of the person's observed x on days BEFORE d          (>= 7 such days, else the day has no z-score; "observed" = observed in the MODELLED stream: for the
+                                                                          activity predictors of the sleep / heart-rate onset models and for the day BEFORE a gap in models B / C there, days that also have
+                                                                          a record in that stream; the days AFTER a gap in model B and their usual use all activity days)
     w_p(d) = (x(d) - m(d)) / sd_w          sd_w = sqrt( mean over all days with m of (x - m)^2 )       (within-person, pooled)
     b_p(d) = (m(d) - mu_b) / sd_b          mu_b, sd_b = mean, SD of m over the same days                (between-person level)
     x(d)   = m(d) + sd_w * w_p(d)          m(d) = mu_b + sd_b * b_p(d)
@@ -42,8 +44,9 @@ first record), `device` (the person's main Fitbit device FAMILY, time-invariant:
 
 ## 1. Gap-onset model (primary, model D and the exploratory grid)
 
-**Rows**: every observed day `d` of a person in the stream except the person's last, with all predictors of the stream non-missing ("common risk set":
-the stream's own predictors AND the three activity predictors on the same date; for adjusted models also `age10`, `sex2`, `cohort`).
+**Rows**: every observed day `d` of a person in the stream except the person's last, **whose calendar day `d - 1` also has a record**, with all predictors of the stream non-missing **on day `d - 1`** ("common risk set":
+the stream's own predictors AND the three activity predictors on that date; for adjusted models also `age10`, `sex2`, `cohort`). **Every `w_` and `b_` in the formulas below is the value of the last FULL day `d - 1`**
+(`cfg$onset$predictor_day = "last_full_day"`): day `d`, the last day with a record before the gap, may be a partial day. The adjusters (weekday of d + 1, study time, gap history) are those of row `d`.
 **Outcome** `y_ge{k}(i,d) = 1` if a gap of at least `k` days starts on day d+1 (next observed date - d - 1 >= k), else 0.
 Primary `k = 1`; model D `k = 2, 3, 7`.
 
@@ -58,14 +61,14 @@ Primary `k = 1`; model D `k = 2, 3, 7`.
           + cohort + age10 + sex2 + dow_t + ns(study_day, 3) + device + cci + cci_missing
           + prev_gap_len_l + any_prior_gap + days_since_return_l + (1 | person_id)
 
-**Sleep stream** (outcome: a *sleep* gap starts tomorrow; predictors: yesterday's sleep and activity)
+**Sleep stream** (outcome: a *sleep* gap starts tomorrow; predictors: the sleep and activity of the last full day)
 
     y_ge1 ~ w_sleep_inbed + w_sleep_eff + w_act_steps + w_act_sedentary + w_act_mvpa
           + b_sleep_inbed + b_sleep_eff + b_act_steps + b_act_sedentary + b_act_mvpa
           + cohort + age10 + sex2 + dow_t + ns(study_day, 3) + device + cci + cci_missing
           + prev_gap_len_l + any_prior_gap + days_since_return_l + (1 | person_id)
 
-**Heart-rate stream** (outcome: a *heart-rate* gap starts tomorrow; predictors: yesterday's heart-rate coverage / elevated minutes and activity)
+**Heart-rate stream** (outcome: a *heart-rate* gap starts tomorrow; predictors: the heart-rate coverage / elevated minutes and the activity of the last full day)
 
     y_ge1 ~ w_hr_cover + w_hr_elev + w_act_steps + w_act_sedentary + w_act_mvpa
           + b_hr_cover + b_hr_elev + b_act_steps + b_act_sedentary + b_act_mvpa
@@ -99,22 +102,28 @@ Each set enters as `w_p + b_p` for every predictor `p` of the set. Example (unad
 | `trailing_baseline` | `y_ge1` | `w_` replaced by `tw_`: `y_ge1 ~ tw_act_steps + tw_act_sedentary + tw_act_mvpa + b_act_steps + b_act_sedentary + b_act_mvpa + <adjusters> + (1 | person_id)`; term reported: `tw_act_steps`; rows without a 14-day baseline drop out |
 | `exclude_partial_wear` | `y_ge1` | primary formula, rows dropped whose day d is flagged partial wear (activity: `steps < 500 or sedentary_minutes >= 1380`; sleep: `minute_in_bed < 60`; hr: `total_hr_min < 1200`; sleep/hr rows are dropped if the stream's own day OR the activity day is flagged) |
 | `first_gap_only` | `y_ge1` | primary formula on days up to and including each person's first gap onset (at most one event per person); the three gap-history terms are constant there and are dropped |
+| `day_before_gap` | `y_ge1` | the primary formula with every `w_` and `b_` read from day d (the day right before the gap, which may be a partial day) instead of the last full day d - 1; every row with complete predictors on d; term reported: `w_act_steps` (of d) |
+| `last_full_day_same_rows` | `y_ge1` | the primary formula (predictors of d - 1) on the rows that have a record on d - 1 and complete predictors on both d - 1 and d (identical rows in the next two) |
+| `day_before_gap_same_rows` | `y_ge1` | the same rows and formula, but every `w_` and `b_` read from day d; outcome unchanged: a gap starts on d + 1 |
+| `both_days` | `y_ge1` | the same rows; the primary formula with day d, `+ lag1_w_act_steps` (steps on d - 1); reported: both estimates and the Wald test of `b_d - b_(d-1)`, variance `v_d + v_(d-1) - 2 cov` |
 | `main_sleep_only` (sleep only) | `y_ge1` | primary formula, but a night is "observed" only if it has a main sleep (`has_main_sleep`); gaps and risk set are rebuilt on that definition |
 | `conditional_logit` | `y_ge1` | `survival::clogit`, Efron: `y_ge1 ~ w_act_steps + w_act_sedentary + w_act_mvpa + dow_t + ns(study_day, 3) + prev_gap_len_l + any_prior_gap + days_since_return_l + strata(person_id)` (`strata` written without the `survival::` prefix so that survival recognises it) (sleep/hr: with their own `w_` terms too); only persons with >= 1 event; no `b_`, cohort, age, sex or year terms (they cancel or are time-invariant); `dow_t` kept only if it varies |
 | `cluster_robust_logit` | `y_ge1` | the primary formula without the random intercept (pooled `glm`, binomial), person-clustered sandwich SEs (`vcovCL`) |
 | `spline_vs_linear` | `y_ge1` | primary formula with `w_act_steps` replaced by `ns(w_act_steps, 3)`; likelihood-ratio test against the linear model (2 df) |
 | `random_slope` | `y_ge1` | primary formula `+ (0 + w_act_steps | person_id)` (uncorrelated random slope); LRT against the primary model, p halved (boundary, 1 df) |
 
-For the sleep and heart-rate streams the tested term is still `w_act_steps` (yesterday's activity), with the stream's own `w_` terms in the model as above.
+For the sleep and heart-rate streams the tested term is still `w_act_steps` (the activity of the last full day), with the stream's own `w_` terms in the model as above.
 
 ## 3. Gap-length models B and C (exploratory; one row per gap; same equations in every stream)
 
 The **stream** only decides which gaps are used (gaps of the activity / sleep / heart-rate series); the **activity** values come from the activity table in all three:
-`pre = w_act_steps` on the last observed day before the gap (against the usual before that day, as in the onset model);
+`pre = w_act_steps` on the last FULL day before the gap, d - 1 (against the usual before that day, as in the onset model; `cfg$gap_models$predictor_day`; the last recorded day d is the sensitivity analysis, see the table below);
 `back1`, `back2` = steps (log1p) on the first observed day after the gap (`next observed date`) and on the day after that (`next observed date + 1`, which must itself be an
-observed activity day), **against the person's usual THROUGH the last observed day before the gap**: `back = (x_post - m_through_prev_day) / sd_w` (data observed before the gap only;
+observed activity day), **against the person's usual THROUGH the last full day before the gap, d - 1**: `back = (x_post - m_through_d-1) / sd_w` (data observed before the gap only, the possibly partial day d not included;
 0 = usual, + = more steps). Gaps with fewer than 7 earlier observed days have no usual. With `standardization = "full_period"` (units `B_back2_adj_fullperiod`, `C_adj_fullperiod`) all of
-these are whole-period z-scores. `post_k0 ... post_k7` = the same z-score on the return day and the 7 days after it (observed trajectory, `model_B_observed_trajectory`).
+these are whole-period z-scores. **Predictor-day sensitivity of B and C** (the last recorded day d instead of the last full day d - 1; same formulas, the day-dependent columns `back*`, `w_pre_day_*` read from the `alt_` columns):
+`B_back2_adj_dbg_all`, `B_back2_adj_pre_dbg_all`, `C_adj_dbg_all` (every gap with day d); `*_same_full` / `*_same_dbg` (exactly the gaps that have both days, d - 1 / d); `C_adj_both_days`
+(`length_bin ~ w_pre_day_steps [d - 1] + w_dbg_steps [d] + adjusters + (1 | person_id)`; reported: both estimates and the Wald test of `b_(d-1) - b_d`, variance `v + v' - 2 cov`). `post_k0 ... post_k7` = the same z-score on the return day and the 7 days after it (observed trajectory, `model_B_observed_trajectory`).
 `log2_gap = log2(gap length)`.
 
 **Model B** (`lme4::lmer`, REML, Gaussian; effect = change per doubling of the gap, in within-person SD units; normal-approximation p)
@@ -133,7 +142,7 @@ these are whole-period z-scores. `post_k0 ... post_k7` = the same z-score on the
     C_unadj : only beta * pre        C_adj : with the covariates        C_adj_fullperiod : C_adj with the whole-period standardization (sensitivity)
     C_adj_mvpa : logit P(length group <= j) = theta_j - ( beta * pre + delta * pre_mvpa + gamma1 * cohort + gamma2 * age10 + gamma3 * sex2 ) - u_i
 
-`pre_mvpa = w_pre_day_mvpa` = log(1 + MVPA minutes) on the last observed day before the gap (the same day as `pre`), minus the mean of the person's EARLIER observed days (>= 7), divided by the
+`pre_mvpa = w_pre_day_mvpa` = log(1 + MVPA minutes) on the last full day before the gap, d - 1 (the same day as `pre`), minus the mean of the person's EARLIER observed days (>= 7), divided by the
 pooled within-person SD of MVPA: **per +1 SD higher MVPA than the person's usual**. Gaps without it are dropped from the `*_mvpa` fits. `delta` and the MVPA coefficient of B are reported
 with 95% intervals in `gap_mvpa_effects` (B: SD of activity; C: odds ratio `exp(delta)` of a longer gap); the specifications without MVPA are unchanged.
 
@@ -145,7 +154,7 @@ longer gap per +1 SD higher than usual activity. If the random-intercept varianc
 
 **Run-in measure** (per person and stream; `runin.R`): `m = N - (observed days among study days 1..N)`, NA if the follow-up is shorter than N days.
 `cov0 = log2(1 + m) - mean over the people analysed`  (per doubling of 1 + m);  `cov0_cat` in {0, 1, 2-3, >=4} (reference 0);  `cov0_lin = 100 m / N / 10` centred.
-**Rows**: onset: prior days with `study_day > N`; models B and C: gaps whose last observed day before the gap has `study_day > N`. Identical rows in every variant.
+**Rows**: onset: rows whose predictor day (the last full day d - 1) has `study_day > N`; models B and C: gaps whose predictor day (the last full day before the gap, d - 1) has `study_day > N`. Identical rows in every variant.
 
     PRIMARY (stage runin):
     onset, reference           : y_ge1 ~ <primary joint adjusted formula>                                  + (1 | person_id)

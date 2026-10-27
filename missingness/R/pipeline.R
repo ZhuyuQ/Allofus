@@ -279,6 +279,10 @@ run_missingness_pipeline <- function(day_tables, persons, cfg, outdir,
         p <- plot_onset_forest_all(res$onset_coefficients, s, cfg)
         if (!is.null(p)) fig(paste0("onset_forest_other_", s), p)
       }
+      if (nz(res$onset_pre_gap_trajectory)) {                       # the observed steps on the days before a gap (counterpart of the post-gap figure of model B)
+        p <- plot_pre_gap_observed(res$onset_pre_gap_trajectory, s, cfg)
+        if (!is.null(p)) fig(paste0("pre_gap_activity_observed_", s), p, 10, 8)
+      }
       if (!is.null(res$onset_deciles) && nrow(res$onset_deciles) > 0L) {
         p <- plot_onset_deciles(res$onset_deciles, s, cfg)
         if (!is.null(p)) fig(paste0("onset_deciles_", s), p, 8, 5)
@@ -313,6 +317,9 @@ run_missingness_pipeline <- function(day_tables, persons, cfg, outdir,
     res <- c(res, collect_gap_results(ckpt, cfg, dkeys))
     if (nrow(res$model_B_curve) > 0L) fig("gap_dose_response", plot_gap_dose_response(res$model_B_curve, res$model_B_observed, cfg), 8, 9)
     if (nrow(res$model_C_predicted_probs) > 0L) fig("gap_length_probs", plot_ordinal_probs(res$model_C_predicted_probs, cfg), 10, 4.5)
+    if (nz(res$gap_day_check)) for (s in model_streams) for (m in c("B", "C")) {      # the predictor-day check of B and C: last full day d - 1 (primary) vs the day before the gap d
+      p <- plot_gap_day_check(res$gap_day_check, s, cfg, m); if (!is.null(p)) fig(paste0("gap", m, "_day_check_", s), p, attr(p, "size")[1L], attr(p, "size")[2L])
+    }
     for (s in model_streams) {                    # one forest plot of ALL predictors per model and stream
       if (!is.null(res$model_B_all_terms) && nrow(res$model_B_all_terms) > 0L) {
         p <- plot_gapB_forest(res$model_B_all_terms, s, cfg); if (!is.null(p)) fig(paste0("gapB_forest_", s), p)
@@ -344,9 +351,13 @@ run_missingness_pipeline <- function(day_tables, persons, cfg, outdir,
     }
     res <- c(res, collect_sensitivity_results(ckpt, cfg, dkeys))
     if (nrow(res$sensitivity) > 0L) {
-      ord <- c("main", "full_period_standardization", "trailing_baseline", "exclude_partial_wear", "first_gap_only", "main_sleep_only", "conditional_logit", "cluster_robust_logit")
-      f_tab <- res$sensitivity[!is.na(or), .(stream, label = analysis, or, or_low, or_high)][order(match(label, ord))]
+      ord <- c("main", "day_before_gap", "full_period_standardization", "trailing_baseline", "exclude_partial_wear", "first_gap_only", "main_sleep_only", "conditional_logit", "cluster_robust_logit")
+      f_tab <- res$sensitivity[!is.na(or) & !analysis %in% c("day_before_gap_same_rows", "last_full_day_same_rows", "both_days"), .(stream, label = analysis, or, or_low, or_high)][order(match(label, ord))]     # the predictor-day check has its own figures
       if (nrow(f_tab) > 0L) fig("forest_sensitivity", plot_forest(f_tab, "Primary Effect Under Different Assumptions", group_col = "stream", style = cfg$plot$interval_style %||% "se"), 10, 5)
+    }
+    if (nz(res$day_check)) for (s in model_streams) {                # the predictor-day check: last full day d - 1 (primary) vs the day before the gap d
+      fig(paste0("day_check_", s), plot_day_check(res$day_check, s, cfg, res$day_descriptive), 10, 5.5)
+      fig(paste0("day_pattern_", s), plot_day_pattern(res$day_pattern, res$day_descriptive, s, cfg), 9, 5.5)
     }
     if (nrow(res$sensitivity_all_terms) > 0L) {
       for (s in model_streams) {                  # every within-person predictor under every analysis, per stream

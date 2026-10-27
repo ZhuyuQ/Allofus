@@ -121,6 +121,15 @@ predictor_table <- function(days, pred_names, cfg, trailing = TRUE, keep_x = TRU
   dt[]
 }
 
+# The days of the activity table that are ALSO observed days of the modelled stream (`days`). The activity predictors of the sleep and heart-rate onset models, and
+# the day BEFORE a gap in models B and C for those streams, are standardized against the person's usual on THESE days only, so the usual and the
+# analysed days are the same kind of day (the days AFTER a gap in model B are activity days and keep all activity days as their reference, see build_gap_level_data). With all activity days as the reference, the rows (days that also have a sleep / heart-rate record, i.e. fuller
+# wear days with more steps) sit systematically above the person's average over all activity days, and every z-score is shifted up. For the activity
+# stream itself nothing changes.
+restrict_to_stream_days <- function(act_days, days) {
+  act_days[days[, c("person_id", "date"), with = FALSE], on = c("person_id", "date"), nomatch = 0L]
+}
+
 # Evaluate a partial-wear rule (an R expression as text, see cfg$onset$partial_wear)
 # on a day table; returns a logical vector (NA treated as FALSE).
 partial_wear_flag <- function(days, rule) {
@@ -168,7 +177,7 @@ prepare_stream_bundle <- function(stream, day_tables, persons, cfg, observed_fil
 
   # activity predictors for the cross-stream models
   if (stream != "activity") {
-    act_days <- day_tables[["activity"]]
+    act_days <- restrict_to_stream_days(day_tables[["activity"]], days)         # the usual of the activity predictors: this stream's observed days only
     act_tab  <- predictor_table(act_days, cfg$activity_predictors, cfg, trailing = trailing, keep_x = FALSE, standardization = standardization)
     act_tab[, pw_act := partial_wear_flag(act_days, cfg$onset$partial_wear$activity)]
     add_columns(act_tab, c("person_id", "date"))

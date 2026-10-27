@@ -64,6 +64,44 @@ covariate_note <- function(cfg) {
 }
 subtitle_or <- function(cfg) paste0(ov_wrap(covariate_note(cfg), 100), "\nThe first colour (dark) is the primary analysis.")
 
+# ---- observed steps BEFORE a gap (the onset model's counterpart of the observed post-gap activity) ----------------------------------------
+
+# Observed (model-free) steps on the days before a gap, one panel per gap-length group (onset_pre_gap_trajectory), for ONE stream.
+#   x: day d - j; d = the last day with a record before the gap (the gap starts on d + 1; day d may be a partial day, see the predictor-day check).
+#   Value = steps (log) as a z-score against the person's usual BEFORE that day, the value the onset model reads; the usual is taken over the days observed in
+#   this stream (restrict_to_stream_days), so 0 = the usual on comparable days. Only the days followed by a gap are drawn; intervals are person-clustered.
+plot_pre_gap_observed <- function(traj, s, cfg) {
+  if (is.null(traj) || nrow(traj) == 0L) return(NULL)
+  d <- copy(traj)[stream == s]
+  if (nrow(d) == 0L) return(NULL)
+  style <- cfg$plot$interval_style %||% "se"
+  lv <- levels(d$group)
+  n0 <- d[days_before == min(days_before), .(group, n_gaps, n_persons)]
+  lab <- stats::setNames(vapply(lv, function(g) {
+    r <- n0[group == g]
+    if (nrow(r)) sprintf("%s%s: %s gaps, %s people", g, if (g == "all gaps") "" else if (g == "1") " day" else " days", format(r$n_gaps, big.mark = ","), format(r$n_persons, big.mark = ",")) else g
+  }, ""), lv)
+  d <- d[group %in% names(lab)[lab != names(lab)]]
+  long <- d[, .(panel = group, x = -days_before, est = mean, lo = lo, hi = hi)]
+  long[, panel := factor(lab[as.character(panel)], levels = lab)]
+  long <- long[drawable_interval(long, "est", "lo", "hi", log = FALSE)]
+  add_interval_columns(long, "est", "lo", "hi", log = FALSE, style = style)
+  ag <- traj[stream == s & group == "all gaps" & days_before %in% 0:2][order(days_before)]
+  stat <- if (nrow(ag)) paste0("All gaps, mean steps z-score (95% CI, people as clusters): ",
+                               paste(sprintf("%s %.3f (%.3f to %.3f)", c("d", "d - 1", "d - 2")[ag$days_before + 1L], ag$mean, ag$lo, ag$hi), collapse = "; "), ".")
+  ggplot(long, aes(x = x, y = est_)) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+    geom_line(color = "#C0392B", linewidth = 0.5, alpha = 0.6) +
+    interval_layer(style, horizontal = FALSE, color = "#C0392B", width = 0.3) +
+    facet_wrap(~panel, ncol = 2) +
+    scale_x_continuous(breaks = sort(unique(long$x)), labels = function(b) ifelse(b == 0, "d", paste0("d - ", -b))) +
+    labs(title = paste0("Observed Steps Before a Gap (", nice_label(s), " Stream)"),
+         subtitle = ov_wrap("Days followed by a gap, by the length of that gap. d = the last day with a record before the gap (the gap starts on d + 1; d may be a partial day, see the predictor-day check). Value = steps vs the person's usual before that day on the days observed in this stream (SD; dashed line 0 = usual, + = more). Unadjusted, descriptive.", 100),
+         x = "Day", y = "Steps vs usual (SD)",
+         caption = paste(c(interval_caption(style), if (!is.null(stat)) ov_wrap(stat, 150)), collapse = "\n")) +
+    forest_theme()
+}
+
 # ---- multicollinearity ---------------------------------------------------------------------------------------------
 
 # GVIF-based diagnostic (collinearity.R) of the models of ONE stream: one panel per model, one dot per term (a factor /
@@ -137,6 +175,7 @@ plot_post_gap_observed <- function(traj, curve, s, cfg) {
 RUNIN_CAT_FILLS <- c("#DEEBF7", "#9ECAE1", "#4292C6", "#2171B5", "#08306B")      # sequential: no missing days (light) -> most (dark)
 runin_cat_palette <- function(lv) stats::setNames(RUNIN_CAT_FILLS[round(seq(1, length(RUNIN_CAT_FILLS), length.out = length(lv)))], lv)
 fmt_p <- function(p) ifelse(is.na(p), "NA", ifelse(p < 0.001, "<0.001", sprintf("%.2g", p)))
+fmt_peq <- function(p) ifelse(is.na(p), "p = NA", ifelse(p < 0.001, "p < 0.001", paste0("p = ", sprintf("%.2g", p))))      # "p < 0.001" / "p = 0.03"
 stream_levels <- function(x) factor(x, levels = intersect(c("activity", "sleep", "hr"), unique(x)))
 
 subtitle_runin <- function(cfg) paste0(ov_wrap(paste0("Only days after the first ", cfg$runin$days, " days of follow-up are modelled (the run-in itself never is). Run-in term: per doubling of (1 + missing days in the run-in), centred. ",
@@ -148,7 +187,7 @@ runin_h2_caption <- function(tests, which = "primary") {
   t2 <- tests[model %in% c("onset", "model C") & analysis == which & startsWith(hypothesis, "H2") & !is.na(p)]
   if (nrow(t2) == 0L) return(NULL)
   ov_wrap(paste0("H2, steps x run-in interaction", if (which == "sensitivity") " (sensitivity)" else "", ": ",
-                 paste(t2[, sprintf("%s %s%s: %s p = %s, Holm p = %s", model, nice_label(stream), if (which == "sensitivity") paste0(" [", sub(",.*$", "", form), "]") else "", ifelse(!is.na(p_lrt), "LRT", "Wald"), fmt_p(p), fmt_p(p_holm))], collapse = " | ")), 150)
+                 paste(t2[, sprintf("%s %s%s: %s %s, Holm %s", model, nice_label(stream), if (which == "sensitivity") paste0(" [", sub(",.*$", "", form), "]") else "", ifelse(!is.na(p_lrt), "LRT", "Wald"), fmt_peq(p), fmt_peq(p_holm))], collapse = " | ")), 150)
 }
 
 # Missing days in the run-in by cohort and stream (100% bars). `dist`: runin_distribution.
@@ -217,9 +256,9 @@ plot_runin_steps_by_group <- function(steps, s, cfg) {
     interval_layer(style, horizontal = FALSE, color_var = "category", width = 0.12) +
     scale_color_manual(values = pal, drop = FALSE) + scale_fill_manual(values = pal, drop = FALSE) +
     facet_wrap(~cohort, ncol = 2, scales = "free_y") + expand_limits(y = 0) +
-    labs(title = paste0("H2: Gap Rate by Prior-Day Steps and Run-in (", nice_label(s), " Stream)"),
-         subtitle = ov_wrap("H2: if the steps-gap association depends on the run-in, the lines differ in SLOPE between groups (not only in height). Unadjusted, descriptive; days after the run-in only. x: yesterday's steps vs the person's usual (mean z-score of each quintile; higher = more steps). Bins with fewer than 20 gaps are not drawn.", 100),
-         x = "Yesterday's steps vs the person's usual (SD)", y = "New gaps per 100 observed days", color = "Missing days\nin the run-in", fill = "Missing days\nin the run-in",
+    labs(title = paste0("H2: Gap Rate by Last-Full-Day Steps and Run-in (", nice_label(s), " Stream)"),
+         subtitle = ov_wrap("H2: if the steps-gap association depends on the run-in, the lines differ in SLOPE between groups (not only in height). Unadjusted, descriptive; days after the run-in only. x: steps of the last full day (d - 1) vs the person's usual (mean z-score of each quintile; higher = more steps). Bins with fewer than 20 gaps are not drawn.", 100),
+         x = "Last full day's steps vs the person's usual (SD)", y = "New gaps per 100 observed days", color = "Missing days\nin the run-in", fill = "Missing days\nin the run-in",
          caption = interval_caption(style)) +
     forest_theme()
 }
@@ -300,6 +339,95 @@ plot_runin_shape <- function(coef_on, models, dist, shape, cfg) {
          subtitle = ov_wrap("Onset model after the run-in. Points: each group against 0 missing days, no shape assumed. Second colour: what the log2(1 + missing days) coding of the main model implies at the group's median. Close agreement supports the log scale; a gap between them means the shape is not log-linear.", 100),
          caption = paste(c(interval_caption(style), if (length(aic)) paste(aic, collapse = " | ")), collapse = "\n")) +
     forest_theme()
+}
+
+# ---- the predictor-day check (sensitivity.R) ---------------------------------------------------------------------------------------
+# The primary onset model reads the predictors from the last FULL day, d - 1 (the calendar day before d, the last day with a record before a gap). The
+# sensitivity analysis reads them from d itself, which may be a partial day. Statistics are written below the figure.
+
+# The primary effect on the last full day d - 1 and on the day before the gap d, side by side, for ONE stream. `chk`: day_check; `desc`: day_descriptive.
+plot_day_check <- function(chk, s, cfg, desc = NULL) {
+  if (is.null(chk) || nrow(chk) == 0L) return(NULL)
+  d <- copy(chk)[stream == s & !grepl("^Difference", as.character(model)) & !is.na(or)]
+  d <- d[drawable_interval(d, "or", "or_low", "or_high", log = TRUE)]
+  if (nrow(d) == 0L) return(NULL)
+  lv <- DAY_MODEL_LEVELS[1:6]
+  d[, model := factor(as.character(model), levels = rev(lv))]
+  style <- cfg$plot$interval_style %||% "se"
+  add_interval_columns(d, "or", "or_low", "or_high", log = TRUE, style = style)
+  pal <- stats::setNames(EFFECT_COLORS[1:6], lv)
+  ct <- chk[stream == s & grepl("^Difference", as.character(model))]
+  ds <- if (!is.null(desc) && nrow(desc)) desc[stream == s] else NULL
+  stat <- c(if (nrow(ct)) sprintf("Joint model, b_d - b_(d-1) = %.3f (ratio of odds ratios %.2f, 95%% CI %.2f to %.2f), Wald %s, Holm %s; estimate on d - 1 / estimate on d (same rows) = %.2f, correlation of the steps z-scores on d and d - 1 = %.2f.",
+                                  ct$estimate, ct$or, ct$or_low, ct$or_high, fmt_peq(ct$p), fmt_peq(ct$p_holm), ct$lagged_over_current %||% NA_real_, ct$rho_d_dminus1 %||% NA_real_),
+            if (!is.null(ds) && nrow(ds)) paste0("Mean steps z-score, gap tomorrow minus no gap (95% CI, people as clusters): ",
+                                                 paste(sprintf("%s %.3f (%.3f to %.3f), %s", sub(" \\(.*$", "", ds$quantity), ds$difference, ds$low, ds$high, fmt_peq(ds$p)), collapse = "; "), "."))
+  ggplot(d, aes(x = est_, y = model, color = model, fill = model)) +
+    geom_vline(xintercept = 1, linetype = "dashed", color = "gray40") +
+    interval_layer(style, horizontal = TRUE, color_var = "model", show.legend = FALSE) +
+    scale_color_manual(values = pal) + scale_fill_manual(values = pal) +
+    scale_x_log10(breaks = OR_BREAKS) + expand_limits(x = 1) +
+    labs(title = paste0("Predictor-Day Check: Last Full Day vs Day Before the Gap (", nice_label(s), " Stream)"),
+         subtitle = ov_wrap("A gap starts on day d + 1. d = the last day with a record before it (the day right before the gap; may be a partial day); d - 1 = the day before it = the last FULL day, which the primary model uses (as model B uses the first full day back). Rows 2 and 3 and the joint model use exactly the same days (a record and complete predictors on both d - 1 and d); row 4 uses every day with complete predictors on d. A partial-day artifact is carried by d and shrinks on d - 1; a real effect of activity persists, because consecutive days are correlated.", 100),
+         x = "Odds ratio per +1 SD of steps (log scale)", y = NULL,
+         caption = paste(c(interval_caption(style), if (length(stat)) ov_wrap(paste(stat, collapse = " "), 150)), collapse = "\n")) +
+    forest_theme()
+}
+
+# The observed pattern: mean steps z-score on d - 1 and on d, by whether a gap starts tomorrow. A partial last day = a drop at d only before a gap.
+plot_day_pattern <- function(pattern, desc, s, cfg) {
+  if (is.null(pattern) || nrow(pattern) == 0L) return(NULL)
+  d <- copy(pattern)[stream == s]
+  if (nrow(d) == 0L) return(NULL)
+  lv <- unname(DAY_LABELS[c("d1", "d0")])
+  d[, `:=`(day = factor(day, levels = lv), group = factor(group, levels = c("No gap the next day", "A gap starts the next day")))]
+  style <- cfg$plot$interval_style %||% "se"
+  add_interval_columns(d, "mean_z", "low", "high", log = FALSE, style = style)
+  pal <- c("No gap the next day" = "#7F8C8D", "A gap starts the next day" = "#C0392B")
+  ds <- if (!is.null(desc) && nrow(desc)) desc[stream == s & quantity == DAY_LABELS[["dz"]]] else NULL
+  stat <- if (!is.null(ds) && nrow(ds)) sprintf("Change from d - 1 to d, gap tomorrow minus no gap: %.3f SD (95%% CI %.3f to %.3f), %s; %s people, %s rows, %s gaps.", ds$difference, ds$low, ds$high, fmt_peq(ds$p),
+                                                  format(ds$n_people, big.mark = ","), format(ds$n_rows, big.mark = ","), format(ds$n_events, big.mark = ","))
+  ggplot(d, aes(x = day, y = est_, color = group, fill = group, group = group)) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+    geom_line(position = position_dodge(width = 0.3), linewidth = 0.6, alpha = 0.7) +
+    interval_layer(style, horizontal = FALSE, color_var = "group", width = 0.25, position = position_dodge(width = 0.3)) +
+    scale_color_manual(values = pal) + scale_fill_manual(values = pal) +
+    labs(title = paste0("Predictor-Day Check: Steps Before a Gap, Day by Day (", nice_label(s), " Stream)"),
+         subtitle = ov_wrap("Mean within-person steps z-score (0 = the person's usual before that day; higher = more steps) on the last full day d - 1 (the day the primary model uses) and on the day before the gap d, by whether a gap starts on d + 1. A partial last day would show as a drop from d - 1 to d that appears only before a gap. Same rows in both columns.", 100),
+         x = NULL, y = "Steps vs the person's usual (SD)", color = NULL, fill = NULL,
+         caption = paste(c(interval_caption(style), if (!is.null(stat)) ov_wrap(stat, 150)), collapse = "\n")) +
+    forest_theme()
+}
+
+plot_gap_day_check <- function(tab, s, cfg, mod = "B") {
+  if (is.null(tab) || nrow(tab) == 0L) return(NULL)
+  d <- tab[stream == s & model == mod & !is.na(estimate) & as.character(variant) != "difference"]
+  est <- if (mod == "B") "estimate" else "or"; lo <- if (mod == "B") "conf_low" else "or_low"; hi <- if (mod == "B") "conf_high" else "or_high"
+  d <- d[drawable_interval(d, est, lo, hi, log = mod == "C")]
+  if (nrow(d) == 0L) return(NULL)
+  lv <- unname(GAP_DAY_VARIANTS[c("primary", "same_full", "same_dbg", "dbg_all", "both_full", "both_dbg")])
+  d[, label := factor(as.character(variant_label), levels = rev(lv))]
+  style <- cfg$plot$interval_style %||% "se"
+  add_interval_columns(d, est, lo, hi, log = mod == "C", style = style)
+  pal <- stats::setNames(EFFECT_COLORS[1:6], lv)
+  ct <- tab[stream == s & model == mod & as.character(variant) == "difference"]
+  stat <- if (nrow(ct)) sprintf("Joint model of both days, b_(d-1) - b_d = %.3f (95%% CI %.3f to %.3f), Wald %s, Holm %s; %s gaps.", ct$estimate, ct$conf_low, ct$conf_high, fmt_peq(ct$p), fmt_peq(ct$p_holm),
+                                format(ct$n_gaps, big.mark = ","))
+  n_txt <- paste0("Gaps: ", paste(sprintf("%s %s", sub(":.*$", "", d$variant_label[!duplicated(paste(d$spec, d$variant))]), format(d$n_gaps[!duplicated(paste(d$spec, d$variant))], big.mark = ",")), collapse = "; "), ".")
+  p <- ggplot(d, aes(x = est_, y = label, color = label, fill = label)) +
+    (if (mod == "C") geom_vline(xintercept = 1, linetype = "dashed", color = "gray40") else geom_vline(xintercept = 0, linetype = "dashed", color = "gray40")) +
+    interval_layer(style, horizontal = TRUE, color_var = "label", show.legend = FALSE) +
+    scale_color_manual(values = pal) + scale_fill_manual(values = pal) +
+    facet_wrap(~spec, ncol = 1) +
+    labs(title = paste0("Model ", mod, ": Last Full Day vs Day Before the Gap (", nice_label(s), " Stream)"),
+         subtitle = ov_wrap(if (mod == "B") "d = the last day with a record before the gap (may be a partial day), d - 1 = the last FULL day, which the primary model uses. In model B the day matters through the person's usual (the days after the gap are standardized against the usual through that day) and, in the second panel, through the steps-before-the-gap covariate. Rows with 'both days' use exactly the same gaps."
+                            else "d = the last day with a record before the gap (may be a partial day), d - 1 = the last FULL day, which the primary model uses as the exposure. Rows with 'both days' use exactly the same gaps; the joint model has both days as exposures.", 100),
+         x = if (mod == "B") "Change in activity on the first full day back per doubling of the gap (SD of the person's usual)" else "Odds ratio of a longer gap per +1 SD of steps",
+         y = NULL, caption = paste(c(interval_caption(style), if (!is.null(stat)) ov_wrap(stat, 150)), collapse = "\n")) +
+    forest_theme()
+  if (mod == "C") p <- p + scale_x_log10(breaks = OR_BREAKS) + expand_limits(x = 1)
+  attr(p, "size") <- c(10, 2 + 1.6 * uniqueN(d$spec))
+  p
 }
 
 # ---- the exploratory grid ---------------------------------------------------------------------------------------------------

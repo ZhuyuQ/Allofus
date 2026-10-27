@@ -108,7 +108,12 @@ test_that("the model data keep only the columns a model uses", {
   du <- build_onset_data(s$b, as.list(make_onset_grid(s$cfg)[spec_id == "activity|uni_act_steps|k1|unadj"]), s$cfg)
   expect_lt(ncol(d), ncol(s$b$rs)); expect_lt(ncol(du), 6L)
   expect_setequal(names(du), c("person_id", "y_ge1", "w_act_steps", "b_act_steps"))
-  expect_equal(nrow(du), nrow(s$b$rs[complete.cases(s$b$rs[, .(w_act_steps, b_act_steps, w_act_sedentary, b_act_sedentary, w_act_mvpa, b_act_mvpa)])]))
+  # the primary onset model reads the last FULL day d - 1: a row needs a record on the calendar day before it, with complete predictors there
+  rs <- copy(s$b$rs)[order(person_id, date)]
+  cols <- c("w_act_steps", "b_act_steps", "w_act_sedentary", "b_act_sedentary", "w_act_mvpa", "b_act_mvpa")
+  rs[, has_prev := !is.na(shift(date)) & as.integer(date - shift(date)) == 1L, by = person_id]
+  for (cl in cols) rs[, (paste0("p_", cl)) := shift(get(cl)), by = person_id]
+  expect_equal(nrow(du), sum(rs$has_prev & complete.cases(rs[, paste0("p_", cols), with = FALSE])))
 })
 
 # ---- memory-saving pieces ----------------------------------------------------------------------
@@ -142,7 +147,7 @@ test_that("adding columns by reference gives the same table as a merge", {
   s <- small_study(-0.5)
   b <- suppressMessages(prepare_stream_bundle("sleep", s$inp$day_tables, s$inp$persons, s$cfg))
   expect_equal(anyDuplicated(b$rs, by = c("person_id", "date")), 0L)
-  a <- predictor_table(s$inp$day_tables$activity, s$cfg$activity_predictors, s$cfg, trailing = FALSE, keep_x = FALSE)
+  a <- predictor_table(restrict_to_stream_days(s$inp$day_tables$activity, s$inp$day_tables$sleep), s$cfg$activity_predictors, s$cfg, trailing = FALSE, keep_x = FALSE)   # the usual on the days observed in the sleep stream
   chk <- merge(b$rs[, .(person_id, date, w_act_steps)], a[, .(person_id, date, w2 = w_act_steps)], by = c("person_id", "date"))
   expect_equal(chk$w_act_steps, chk$w2)
 })
@@ -187,8 +192,10 @@ test_that("observed gap rate by decile of the primary term: ten deciles per coho
   dec <- onset_deciles(s$b, s$cfg)
   expect_true(all(c("cohort", "decile", "mean_z", "n_rows", "n_events", "n_persons", "rate", "rate_low", "rate_high") %in% names(dec)))
   expect_equal(max(dec$decile), 10L)
-  expect_equal(sum(dec$n_rows), sum(!is.na(s$b$rs$w_act_steps) & !is.na(s$b$rs$y_ge1)))        # every row at risk is in exactly one decile
-  expect_equal(sum(dec$n_events), sum(s$b$rs$y_ge1[!is.na(s$b$rs$w_act_steps)], na.rm = TRUE))
+  rs <- copy(s$b$rs)[order(person_id, date)]                                                     # the term is read on the last full day d - 1 (needs a record there)
+  rs[, prev_w := fifelse(!is.na(shift(date)) & as.integer(date - shift(date)) == 1L, shift(w_act_steps), NA_real_), by = person_id]
+  expect_equal(sum(dec$n_rows), sum(!is.na(rs$prev_w) & !is.na(rs$y_ge1)))                       # every row at risk is in exactly one decile
+  expect_equal(sum(dec$n_events), sum(rs$y_ge1[!is.na(rs$prev_w)], na.rm = TRUE))
   expect_true(all(dec$rate_low <= dec$rate + 1e-12 & dec$rate <= dec$rate_high + 1e-12, na.rm = TRUE))
   expect_lt(cor(dec[, .(r = weighted.mean(rate, n_rows)), by = decile]$r, 1:10), -0.5)         # lower activity -> more gaps
   expect_equal(nrow(onset_deciles(list(rs = s$b$rs[0L]), s$cfg)), 0L)

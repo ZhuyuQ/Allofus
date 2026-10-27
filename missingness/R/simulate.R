@@ -13,8 +13,10 @@
 # ==============================================================================
 
 # Presence matrix (persons x days): TRUE = observed. Gaps start with probability
-# plogis(base_logit + person_effect + beta * z[, t-1]) and last 1 + Geometric days.
-simulate_presence <- function(z, base_logit, person_effect, beta, gap_p = 0.5, max_gap = 14L) {
+# plogis(base_logit + person_effect + beta * z[, t - effect_lag]) and last 1 + Geometric days. A gap starts on day t; its last recorded day is t - 1, so
+# effect_lag = 1 plants the effect on the day right before the gap and effect_lag = 2 (default) on the last FULL day (t - 2), which is the day the
+# primary onset model reads its predictors from.
+simulate_presence <- function(z, base_logit, person_effect, beta, gap_p = 0.5, max_gap = 14L, effect_lag = 2L) {
   n <- nrow(z); T <- ncol(z)
   obs <- matrix(TRUE, n, T)
   gap_left <- integer(n)
@@ -24,7 +26,7 @@ simulate_presence <- function(z, base_logit, person_effect, beta, gap_p = 0.5, m
     gap_left[in_gap] <- gap_left[in_gap] - 1L
     can <- which(!in_gap & obs[, t - 1L])
     if (length(can)) {
-      onset <- stats::runif(length(can)) < stats::plogis(base_logit + person_effect[can] + beta * z[can, t - 1L])
+      onset <- stats::runif(length(can)) < stats::plogis(base_logit + person_effect[can] + beta * z[can, max(t - effect_lag, 1L)])
       who <- can[onset]
       if (length(who)) {
         L <- pmin(1L + stats::rgeom(length(who), gap_p), max_gap)
@@ -47,7 +49,7 @@ observed_days_by_person <- function(obs, window_len) {
 
 simulate_study <- function(n_per_cohort = c(Insomnia = 120, Diabetes = 120, Healthy = 240, Prostate = 60),
                            n_days = c(60L, 140L), beta = -0.5, seed = 20260511L,
-                           base_logit = c(activity = -3.9, sleep = -3.0, hr = -3.4)) {
+                           base_logit = c(activity = -3.9, sleep = -3.0, hr = -3.4), effect_lag = 2L) {
   with_seed(seed, {
     cohort <- rep(names(n_per_cohort), n_per_cohort)
     n  <- length(cohort)
@@ -65,7 +67,7 @@ simulate_study <- function(n_per_cohort = c(Insomnia = 120, Diabetes = 120, Heal
 
     cohort_shift <- c(Insomnia = 0.15, Diabetes = 0.25, Healthy = -0.1, Prostate = 0)[cohort]
     pe <- stats::rnorm(n, 0, 0.5) + cohort_shift
-    obs <- lapply(base_logit, function(b) simulate_presence(z, b, pe, beta))
+    obs <- lapply(base_logit, function(b) simulate_presence(z, b, pe, beta, effect_lag = effect_lag))
     names(obs) <- names(base_logit)
 
     # helper: long table of observed (person, day index) for a stream, trimmed so that

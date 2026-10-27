@@ -183,10 +183,13 @@ print.day_store <- function(x, ...) {
 # The input fingerprints a result of `stream` depends on: its own day table, the activity table
 # (activity predictors enter every model), and the person table (covariates, cohorts).
 data_key <- function(store, stream) {
-  list(days = store$fingerprint(stream),
-       act = if (stream != "activity") store$fingerprint("activity"),
-       persons = store$fingerprint("persons"),
-       device = device_fingerprint(store))
+  c(list(days = store$fingerprint(stream),
+         act = if (stream != "activity") store$fingerprint("activity"),
+         persons = store$fingerprint("persons"),
+         device = device_fingerprint(store)),
+    # the activity predictors of the sleep and heart-rate streams are standardized on that stream's observed days (predictors.R): results made with the
+    # earlier reference (all activity days) are never reused. The key of the activity stream is unchanged.
+    if (stream != "activity") list(activity_reference = "stream_days_v2"))
 }
 
 # Fingerprint of the device table. Also works for a day store object created by an older version of this code (its fingerprint()

@@ -88,7 +88,7 @@ test_that("pipeline writes tables, figures and metadata; primary effect recovere
                                                           "metric_summary.tsv", "onset_coefficients.tsv", "primary_test.tsv")))))
   expect_true(file.exists(file.path(out, "figures", "missing_pct_by_cohort.png")))
   # one forest plot with all predictors, and one observed-rate (decile) figure, per stream - and the table behind the latter
-  expect_true(all(file.exists(file.path(out, "figures", paste0(rep(c("onset_forest_other_", "onset_deciles_"), each = 3L), c("activity", "sleep", "hr"), ".png")))))
+  expect_true(all(file.exists(file.path(out, "figures", paste0(rep(c("onset_forest_other_", "onset_deciles_", "pre_gap_activity_observed_"), each = 3L), c("activity", "sleep", "hr"), ".png")))))
   expect_true(file.exists(file.path(out, "tables", "onset_deciles.tsv"))); expect_setequal(res$onset_deciles$stream, c("activity", "sleep", "hr"))
   expect_match(paste(readLines(file.path(out, "figures", "figure_captions.md")), collapse = " "), "every predictor, in this order")
   expect_true(all(file.exists(file.path(out, c("run_config.json", "session_info.txt", "input_manifest.tsv")))))
@@ -228,6 +228,11 @@ test_that("the sensitivity stage writes the all-predictor table and one forest p
   expect_true(file.exists(file.path(out, "figures", "sensitivity_forest_activity.png")))
   expect_true(file.exists(file.path(out, "figures", "forest_sensitivity.png")))
   expect_gt(nrow(r$sensitivity_all_terms), nrow(r$sensitivity[!analysis %in% c("spline_vs_linear", "random_slope")]))
+  # the predictor-day check: tables and its own figures, not mixed into the generic sensitivity figures
+  expect_true(all(file.exists(file.path(out, "tables", c("day_check.tsv", "day_pattern.tsv", "day_descriptive.tsv")))))
+  expect_true(all(file.exists(file.path(out, "figures", c("day_check_activity.png", "day_pattern_activity.png")))))
+  expect_true(all(c("day_before_gap", "day_before_gap_same_rows", "both_days") %in% r$sensitivity$analysis))
+  ix <- fread(file.path(out, "figures", "figure_index.tsv")); expect_equal(ix[figure == "day_check_activity.png", step], 6L)
 })
 
 test_that("run-in analysis: the description alone fits no model; the models stage adds the fits after the run-in, tables, figures, the figure index, and resumes", {

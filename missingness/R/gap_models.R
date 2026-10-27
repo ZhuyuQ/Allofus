@@ -12,7 +12,14 @@
 #
 #   C  "Once a gap starts, does low activity the day before predict a longer gap?"
 #        outcome   : gap length group  1 | 2 | 3 | 4-7 | 8-14 | 15+
-#        predictor : prior-day activity (within-person z-score)
+#        predictor : activity on the last FULL day before the gap (within-person z-score)
+#
+# The last day with a record before a gap (d) may be a partial day (the device taken off during it). Both models therefore refer to the last FULL day before
+# the gap, d - 1 (the calendar day before d; cfg$gap_models$predictor_day = "last_full_day"), exactly as the primary onset model does: the exposure of C and the
+# pre-gap covariates of B (w_pre_day_*) are read on d - 1, and the usual against which the days AFTER a gap are standardized is the person's mean through d - 1, so
+# the possibly partial day d enters nowhere. A gap needs an activity record on d - 1 (the usual through that day); the exposure of C and the pre-gap covariates of
+# B also need a record of the modelled stream on d - 1. Gaps whose day d is the first record or the first day after an earlier gap have no d - 1 and are not in the primary models.
+# The day right before the gap (d) is the sensitivity analysis (`alt_*` columns; units *_dbg_all, *_same_*, C_adj_both_days).
 #        ordinal mixed model - run ONLY if the proportional-odds assumption holds.
 #
 # Both are conditional on a gap having happened (so they describe gap-prone
@@ -66,38 +73,84 @@ collapse_sparse_bins <- function(f, min_n) {
 #                     before the gap; the run-in analysis keeps the gaps with prev_study_day > cfg$runin$days (runin.R)
 # Only the columns the models use are kept (no dates, no unused predictors).
 POST_GAP_DAYS <- 0:7
+
+# How many days before the last recorded day d the predictor day lies: 1 = the last FULL day d - 1 (primary), 0 = the last recorded day d.
+gap_predictor_lag <- function(cfg) {
+  day <- cfg$gap_models$predictor_day %||% "last_full_day"
+  if (!day %in% c("last_full_day", "day_before_gap")) stop("unknown predictor day: ", day, call. = FALSE)
+  if (day == "last_full_day") 1L else 0L
+}
+
+# The gap table seen with the primary predictor day (`day` = NULL or the configured one) or with the other one ("alt_" columns put in place of the primary
+# ones). `vars`: the columns a model uses that depend on the day (exposure / covariates / outcome). same_rows = TRUE keeps only the gaps that have all of them
+# on BOTH days, so a comparison of the two days is on identical gaps and outcomes.
+gap_day_view <- function(gdat, cfg, vars, day = NULL, same_rows = FALSE) {
+  prim <- cfg$gap_models$predictor_day %||% "last_full_day"
+  day <- day %||% prim
+  if (!day %in% c("last_full_day", "day_before_gap")) stop("unknown predictor day: ", day, call. = FALSE)
+  vars <- intersect(vars, names(gdat)); alt <- paste0("alt_", vars)
+  if (isTRUE(same_rows) && length(vars)) gdat <- gdat[stats::complete.cases(gdat[, c(vars, alt), with = FALSE])]
+  if (day != prim && length(vars)) {
+    gdat <- copy(gdat)
+    for (v in vars) set(gdat, j = v, value = gdat[[paste0("alt_", v)]])
+  }
+  gdat
+}
+
 build_gap_level_data <- function(days, act_days, persons, cfg, pred = "act_steps",
                                  standardization = cfg$standardization$method %||% "pre_gap") {
   gaps <- get_gap_runs(days)
-  rt <- runin_person_table(days, cfg$runin$days)          # missing days in the run-in and the study day of the last observed day before each gap (run-in analysis, runin.R)
-  gaps[rt, on = "person_id", `:=`(runin_missing = i.runin_missing, prev_study_day = as.integer(prev_obs_date - i.first_date) + 1L)]
+  # TWO reference sets, each matched to the day it is applied to (see the stream-day rule in predictors.R):
+  #   the day BEFORE the gap (w_pre_day_*: the exposure of model C, a covariate of model B) is a day observed in this stream  -> its usual: days observed in this stream;
+  #   the days AFTER the gap (the outcome of model B) are any activity-observed days, and their usual (through the last full day before the gap) is built from
+  #   all activity days -> the same kind of day. Requiring a record of this stream on the days after the gap would select on what happens after the gap.
+  # WHICH day before the gap: the last FULL day d - 1 (primary, cfg$gap_models$predictor_day) or the last recorded day d (sensitivity, the `alt_` columns).
+  lag_prim <- gap_predictor_lag(cfg); lag_alt <- 1L - lag_prim
+  act_s <- restrict_to_stream_days(act_days, days)        # (the activity stream: nothing changes)
+  rt <- runin_person_table(days, cfg$runin$days)          # missing days in the run-in and the study day of the predictor day before each gap (run-in analysis, runin.R)
+  gaps[rt, on = "person_id", `:=`(runin_missing = i.runin_missing, prev_study_day = as.integer(prev_obs_date - lag_prim - i.first_date) + 1L)]
   rm(rt)
   pre_gap <- standardization == "pre_gap"
   mvpa <- "act_mvpa"
   has_mvpa <- cfg$predictors[[mvpa]]$col %in% names(act_days)
   a <- predictor_table(act_days, c(pred, if (has_mvpa) mvpa), cfg, trailing = FALSE, keep_x = pre_gap,
-                       standardization = standardization, keep_baseline = pre_gap)
+                       standardization = standardization, keep_baseline = pre_gap)           # all activity days: the days AFTER the gap and their usual
   sd_w <- attr(a, "scales")[predictor == pred, sd_within]                 # the steps scale, as before (each predictor has its own constants)
   wcol <- paste0("w_", pred)
-  a_mvpa <- if (has_mvpa) a[, c("person_id", "date", paste0("w_", mvpa)), with = FALSE]
+  # the day before the gap: z-scores against the usual on the days observed in this stream (the same table for the activity stream)
+  a_pre <- if (nrow(act_s) == nrow(act_days)) a else predictor_table(act_s, c(pred, if (has_mvpa) mvpa), cfg, trailing = FALSE, keep_x = FALSE,
+                                                                      standardization = standardization, keep_baseline = FALSE)
+  a_mvpa <- if (has_mvpa) a_pre[, c("person_id", "date", paste0("w_", mvpa)), with = FALSE]
+  a_s <- a_pre[, c("person_id", "date", wcol), with = FALSE]; setnames(a_s, wcol, "w"); setkey(a_s, person_id, date)
+  rm(a_pre)
   a <- a[, c("person_id", "date", wcol, if (pre_gap) c(paste0("x_", pred), paste0("m_", pred))), with = FALSE]
   setnames(a, c(wcol, if (pre_gap) c(paste0("x_", pred), paste0("m_", pred))), c("w", if (pre_gap) c("x", "m")))
   setkey(a, person_id, date)
+  if (has_mvpa) { setnames(a_mvpa, paste0("w_", mvpa), "w"); setkey(a_mvpa, person_id, date) }
 
-  gaps[, w_pre_day_steps := a[.(gaps$person_id, gaps$prev_obs_date), w]]
-  if (has_mvpa) {                                                          # MVPA of the SAME day (the last observed day before the gap), same rule
-    setnames(a_mvpa, paste0("w_", mvpa), "w"); setkey(a_mvpa, person_id, date)
-    gaps[, w_pre_day_mvpa := a_mvpa[.(gaps$person_id, gaps$prev_obs_date), w]]
-    rm(a_mvpa)
-  } else gaps[, w_pre_day_mvpa := NA_real_]
+  # the predictor day of each gap and, with the pre-gap standardization, the person's usual THROUGH that day (known when it is over; for the last full day
+  # it does not contain the possibly partial day d). "" = the primary day, "alt_" = the other one (sensitivity).
+  for (sfx in c("", "alt_")) {
+    ref <- gaps$prev_obs_date - (if (sfx == "") lag_prim else lag_alt)
+    set(gaps, j = paste0(sfx, "w_pre_day_steps"), value = a_s[.(gaps$person_id, ref), w])
+    set(gaps, j = paste0(sfx, "w_pre_day_mvpa"), value = if (has_mvpa) a_mvpa[.(gaps$person_id, ref), w] else NA_real_)
+    if (pre_gap) {
+      m_g <- a[.(gaps$person_id, ref), m]
+      if (sfx == "") for (k in POST_GAP_DAYS)
+        set(gaps, j = paste0("post_k", k), value = (a[.(gaps$person_id, gaps$next_obs_date + k), x] - m_g) / sd_w)
+      else {
+        set(gaps, j = "alt_back1_dev", value = (a[.(gaps$person_id, gaps$next_obs_date), x] - m_g) / sd_w)
+        set(gaps, j = "alt_back2_dev", value = (a[.(gaps$person_id, gaps$next_obs_date + 1L), x] - m_g) / sd_w)
+      }
+    }
+  }
+  rm(a_s, a_mvpa)
   if (pre_gap) {
-    m_g <- a[.(gaps$person_id, gaps$prev_obs_date), m]               # usual through the last day before the gap
-    for (k in POST_GAP_DAYS)
-      set(gaps, j = paste0("post_k", k), value = (a[.(gaps$person_id, gaps$next_obs_date + k), x] - m_g) / sd_w)
     gaps[, `:=`(back1_dev = post_k0, back2_dev = post_k1)]
-  } else {
+  } else {                                                                 # whole-period usual: the outcome does not depend on the day before the gap
     gaps[, `:=`(back1_dev = a[.(gaps$person_id, gaps$next_obs_date), w],
                 back2_dev = a[.(gaps$person_id, gaps$next_obs_date + 1L), w])]
+    gaps[, `:=`(alt_back1_dev = back1_dev, alt_back2_dev = back2_dev)]
   }
   rm(a)
   gaps[, `:=`(log2_gap = log2(gap_length),
@@ -164,8 +217,11 @@ gap_curve_B <- function(fit, cfg) {
 # Returns list(coef, curve, observed, info); status "failed..." is never reported as a fit.
 # runin: NULL (all gaps) or a run-in variant ("reference" | "main" | "interaction", runin.R): only gaps AFTER the run-in are modelled;
 #   "main" adds cov0, "interaction" adds cov0 and log2_gap x cov0 (is the dose-response of the gap length different by run-in?).
+# day, same_rows: the sensitivity analysis of the predictor day (see gap_day_view): day = "day_before_gap" reads the pre-gap quantities (the usual the days after
+#   the gap are standardized with, and w_pre_day_* when used) on the last recorded day d instead of the last full day d - 1; same_rows = TRUE keeps the gaps that have both days.
 fit_gap_dose_response <- function(gdat, cfg, outcome = "back2_dev", adjusted = FALSE, adjust_pre = FALSE,
-                                  id = NA_character_, adjust_mvpa = FALSE, runin = NULL) {
+                                  id = NA_character_, adjust_mvpa = FALSE, runin = NULL, day = NULL, same_rows = FALSE) {
+  gdat <- gap_day_view(gdat, cfg, c(outcome, if (adjust_pre) "w_pre_day_steps", if (adjust_mvpa) "w_pre_day_mvpa"), day, same_rows)
   d <- gdat[!is.na(get(outcome)) & !is.na(log2_gap)]
   if (!is.null(runin)) d <- d[prev_study_day > cfg$runin$days & !is.na(runin_missing)]
   if (adjust_pre) d <- d[!is.na(w_pre_day_steps)]
@@ -174,7 +230,7 @@ fit_gap_dose_response <- function(gdat, cfg, outcome = "back2_dev", adjusted = F
   if (adjust_mvpa) d <- d[!is.na(w_pre_day_mvpa)]
   if (!is.null(runin) && nrow(d)) add_runin_columns(d, cfg$runin$days, cfg)       # centred at the mean over the people analysed
   base <- data.table(model = "B", model_id = id, outcome = outcome, adjusted = adjusted, adjust_pre = adjust_pre,
-                     adjust_mvpa = adjust_mvpa, n_gaps_no_mvpa = n_no_mvpa,
+                     adjust_mvpa = adjust_mvpa, n_gaps_no_mvpa = n_no_mvpa, predictor_day = day %||% (cfg$gap_models$predictor_day %||% "last_full_day"), same_rows = isTRUE(same_rows),
                      n_gaps = nrow(d), n_persons = uniqueN(d$person_id),
                      outcome_mean = if (nrow(d)) mean(d[[outcome]]) else NA_real_, outcome_sd = if (nrow(d) > 1L) stats::sd(d[[outcome]]) else NA_real_,    # outcome distribution (z-scores: ~0 and ~1)
                      gaps_per_person_max = if (nrow(d)) max(table(d$person_id)) else NA_integer_)
@@ -319,8 +375,17 @@ empty_C_row <- function(base, status, note = "", po_p = NA_real_) {
 #   ordinary covariate (only the effect of the steps term is tested for proportionality). Gaps without it are dropped.
 # runin: NULL (all gaps) or "reference" | "main" | "interaction" (runin.R): only gaps AFTER the run-in; "interaction" adds cov0 and the
 #   product w_pre_day_steps x cov0 (is the steps -> longer-gap association different by run-in?). No predicted probabilities for these fits.
-fit_gap_length_ordinal <- function(gdat, cfg, adjusted = FALSE, id = NA_character_, adjust_mvpa = FALSE, runin = NULL) {
+# day, same_rows: the sensitivity analysis of the predictor day (see gap_day_view). day = "both" puts the steps of the last full day (w_pre_day_steps) AND of the day right
+#   before the gap (w_dbg_steps) in one model, on the gaps that have both: the effect of each given the other and the Wald test of their difference (b_full, b_dbg ... in `coef`).
+fit_gap_length_ordinal <- function(gdat, cfg, adjusted = FALSE, id = NA_character_, adjust_mvpa = FALSE, runin = NULL, day = NULL, same_rows = FALSE) {
+  both <- identical(day, "both")
+  if (both) {                                                                        # w_pre_day_steps = last full day d - 1, w_dbg_steps = day before the gap d, whatever the configured primary day
+    gdat <- copy(gap_day_view(gdat, cfg, c("w_pre_day_steps", if (adjust_mvpa) "w_pre_day_mvpa"), NULL, TRUE))
+    if (gap_predictor_lag(cfg) == 1L) set(gdat, j = "w_dbg_steps", value = gdat$alt_w_pre_day_steps)
+    else { set(gdat, j = "w_dbg_steps", value = gdat$w_pre_day_steps); set(gdat, j = "w_pre_day_steps", value = gdat$alt_w_pre_day_steps) }
+  } else gdat <- gap_day_view(gdat, cfg, c("w_pre_day_steps", if (adjust_mvpa) "w_pre_day_mvpa"), day, same_rows)
   d <- gdat[!is.na(w_pre_day_steps) & !is.na(length_bin)]
+  if (both) d <- d[!is.na(w_dbg_steps)]
   if (!is.null(runin)) d <- d[prev_study_day > cfg$runin$days & !is.na(runin_missing)]
   adj <- if (adjusted) gap_adjusters(d) else character()
   if (adjusted) d <- d[complete.cases(d[, ..adj])]
@@ -334,7 +399,7 @@ fit_gap_length_ordinal <- function(gdat, cfg, adjusted = FALSE, id = NA_characte
       runin_terms <- switch(runin, reference = character(), main = "cov0", interaction = c("cov0", "w_x_cov0"), stop("unknown run-in variant: ", runin, call. = FALSE))
     }
   }
-  cov_terms <- c(if (adjust_mvpa) "w_pre_day_mvpa", adj, runin_terms)                # every covariate besides the exposure
+  cov_terms <- c(if (adjust_mvpa) "w_pre_day_mvpa", if (both) "w_dbg_steps", adj, runin_terms)     # every covariate besides the exposure
   cov0_center <- if (!is.null(runin) && nrow(d)) unname(attr(d, "cov0_center")[["log"]]) else NA_real_
   d <- d[, c("person_id", "length_bin", "w_pre_day_steps", cov_terms), with = FALSE]      # nothing else is needed
   d[, length_bin := droplevels(length_bin)]
@@ -342,7 +407,8 @@ fit_gap_length_ordinal <- function(gdat, cfg, adjusted = FALSE, id = NA_characte
   base <- data.table(model = "C", model_id = id, adjusted = adjusted, adjust_mvpa = adjust_mvpa, n_gaps_no_mvpa = n_no_mvpa,
                      n_gaps = nrow(d), n_persons = uniqueN(d$person_id),
                      length_groups = paste(names(counts), collapse = " | "),
-                     group_counts = paste(counts, collapse = " | "))
+                     group_counts = paste(counts, collapse = " | "),
+                     predictor_day = if (both) "both" else day %||% (cfg$gap_models$predictor_day %||% "last_full_day"), same_rows = isTRUE(same_rows) || both)
   if (!is.null(runin)) base[, `:=`(runin_variant = runin, runin_days = cfg$runin$days)]
   ren <- function(x) sub("^w_x_cov0$", "w_pre_day_steps:cov0", x)                      # the product column is reported under its model name
   finish <- function(coef, pred = NULL, coef_all = NULL, dg = NULL) {
@@ -417,6 +483,10 @@ fit_gap_length_ordinal <- function(gdat, cfg, adjusted = FALSE, id = NA_characte
                                                       b_int = if ("w_x_cov0" %in% names(par_hat)) unname(par_hat[["w_x_cov0"]]) else NA_real_,
                                                       se_int = if ("w_x_cov0" %in% names(se_vec)) unname(se_vec[["w_x_cov0"]]) else NA_real_,
                                                       cov_key_int = if ("w_x_cov0" %in% colnames(V_use)) V_use["w_pre_day_steps", "w_x_cov0"] else NA_real_))
+  if (both && "w_dbg_steps" %in% colnames(V_use))                                  # the two estimates with their covariance: the Wald test of the difference (day_check)
+    coef <- cbind(coef, data.table(b_full = unname(par_hat[["w_pre_day_steps"]]), v_full = V_use["w_pre_day_steps", "w_pre_day_steps"],
+                                   b_dbg = unname(par_hat[["w_dbg_steps"]]), v_dbg = V_use["w_dbg_steps", "w_dbg_steps"],
+                                   cov_full_dbg = V_use["w_pre_day_steps", "w_dbg_steps"]))
   # every coefficient of the model (thresholds excluded) with its odds ratio of a LONGER gap: per +1 SD above usual for the
   # prior-day term (sign flipped, as in `coef`), per +1 unit / vs the reference level for the others
   b_names <- setdiff(names(par_hat), names(par_hat)[grepl("\\|", names(par_hat))])
@@ -449,11 +519,23 @@ gap_unit_specs <- function() list(
   C_unadj         = list(model = "C", adjusted = FALSE),
   C_adj           = list(model = "C", adjusted = TRUE),
   C_adj_fullperiod = list(model = "C", adjusted = TRUE, standardization = "full_period"),
-  C_adj_mvpa       = list(model = "C", adjusted = TRUE, adjust_mvpa = TRUE))
+  C_adj_mvpa       = list(model = "C", adjusted = TRUE, adjust_mvpa = TRUE),
+  # SENSITIVITY: the day right before the gap (d) instead of the last full day (d - 1). *_dbg_all: every gap that has the day (the earlier primary analysis);
+  # *_same_full / *_same_dbg: the SAME gaps (both days present), d - 1 / d; C_adj_both_days: both in one model with the Wald test of the difference.
+  B_back2_adj_dbg_all      = list(model = "B", outcome = "back2_dev", adjusted = TRUE, adjust_pre = FALSE, day = "day_before_gap"),
+  B_back2_adj_same_full    = list(model = "B", outcome = "back2_dev", adjusted = TRUE, adjust_pre = FALSE, day = "last_full_day", same_rows = TRUE),
+  B_back2_adj_same_dbg     = list(model = "B", outcome = "back2_dev", adjusted = TRUE, adjust_pre = FALSE, day = "day_before_gap", same_rows = TRUE),
+  B_back2_adj_pre_dbg_all   = list(model = "B", outcome = "back2_dev", adjusted = TRUE, adjust_pre = TRUE, day = "day_before_gap"),
+  B_back2_adj_pre_same_full = list(model = "B", outcome = "back2_dev", adjusted = TRUE, adjust_pre = TRUE, day = "last_full_day", same_rows = TRUE),
+  B_back2_adj_pre_same_dbg  = list(model = "B", outcome = "back2_dev", adjusted = TRUE, adjust_pre = TRUE, day = "day_before_gap", same_rows = TRUE),
+  C_adj_dbg_all    = list(model = "C", adjusted = TRUE, day = "day_before_gap"),
+  C_adj_same_full  = list(model = "C", adjusted = TRUE, day = "last_full_day", same_rows = TRUE),
+  C_adj_same_dbg   = list(model = "C", adjusted = TRUE, day = "day_before_gap", same_rows = TRUE),
+  C_adj_both_days  = list(model = "C", adjusted = TRUE, day = "both"))
 
-# Version of the stored B / C results (2: every coefficient of the model is kept for the forest plots). Part of the
+# Version of the stored B / C results (2: every coefficient of the model is kept for the forest plots; 3: last full day, predictor_day / same_rows columns). Part of the
 # checkpoint key, so results stored by an older version are recomputed, never mixed in.
-GAP_SCHEMA <- 2L
+GAP_SCHEMA <- 3L
 
 # gap_data : lazy(build_gap_level_data(...)) - built only when some unit has to run.
 # gap_data_full : lazy(build_gap_level_data(..., standardization = "full_period")) for the full-period sensitivity units
@@ -474,8 +556,8 @@ run_gap_stage <- function(s, gap_data, cfg, ckpt_dir, dkey, gap_data_full = NULL
     sp <- specs[[id]]
     run_unit(ckpt_dir, unit_of(id), key_of(id), function() {
       g <- data_of(sp)                           # built in the parent before the workers start (shared by fork)
-      if (sp$model == "B") isolated(cfg_u, fit_gap_dose_response(g, cfg_u, sp$outcome, sp$adjusted, sp$adjust_pre, id, adjust_mvpa = isTRUE(sp$adjust_mvpa)))
-      else if (sp$model == "C") isolated(cfg_u, fit_gap_length_ordinal(g, cfg_u, sp$adjusted, id, adjust_mvpa = isTRUE(sp$adjust_mvpa)))
+      if (sp$model == "B") isolated(cfg_u, fit_gap_dose_response(g, cfg_u, sp$outcome, sp$adjusted, sp$adjust_pre, id, adjust_mvpa = isTRUE(sp$adjust_mvpa), day = sp$day, same_rows = isTRUE(sp$same_rows)))
+      else if (sp$model == "C") isolated(cfg_u, fit_gap_length_ordinal(g, cfg_u, sp$adjusted, id, adjust_mvpa = isTRUE(sp$adjust_mvpa), day = sp$day, same_rows = isTRUE(sp$same_rows)))
       else isolated(cfg_u, list(trajectory = cbind(model_id = id, observed_post_gap_trajectory(g, cfg_u)),
                                 info = data.table(model_id = id, status = "ok", note = "")))
     }, cfg_u)$status
@@ -555,6 +637,56 @@ build_gap_mvpa_table <- function(b_all, c_all, b_coef, c_coef, gvif = NULL) {
   out[order(model, stream, pair, -mvpa_adjusted, term)][]
 }
 
+# ---- the predictor-day check of models B and C ------------------------------------------------------------------------------------
+
+# Labels of the variants of the check (the primary model and the sensitivity analyses of the day before the gap).
+GAP_DAY_VARIANTS <- c(primary = "Primary: last full day d - 1, all gaps", same_full = "Last full day d - 1, gaps with both days",
+                      same_dbg = "Day before the gap d, gaps with both days", dbg_all = "Day before the gap d, all gaps",
+                      both_full = "Joint model: last full day d - 1", both_dbg = "Joint model: day before the gap d",
+                      difference = "Difference d - 1 minus d (joint model)")
+# Model-id stems of the checked specifications: B with the first full day back as outcome (adjusted; adjusted + steps before the gap), C adjusted.
+GAP_DAY_SPECS <- c(B_back2_adj = "Adjusted", B_back2_adj_pre = "Adjusted + steps before the gap", C_adj = "Adjusted")
+
+# One table: the effect of the model (B: change in activity on the first full day back per doubling of the gap, in SD; C: odds ratio of a longer gap per +1 SD of
+# steps) in the primary model and the day-before-the-gap analyses, per stream; for C also the joint model of both days with the Wald test of the difference of the
+# two estimates (variance v_full + v_dbg - 2 cov, from the fit; Holm over the streams). There is no formal test for the single-day B and C fits (separate fits have
+# no covariance); the joint model of C is the test, and the number of gaps shows what differs between the "all gaps" and the "same gaps" rows.
+build_gap_day_check <- function(b_coef, c_coef, c_all = NULL) {
+  take <- function(tab, term_, model_) {
+    if (!nz(tab)) return(NULL)
+    stems <- names(GAP_DAY_SPECS)[startsWith(names(GAP_DAY_SPECS), paste0(model_, "_"))]
+    rows <- lapply(stems, function(st) {
+      ids <- c(primary = st, same_full = paste0(st, "_same_full"), same_dbg = paste0(st, "_same_dbg"), dbg_all = paste0(st, "_dbg_all"))
+      x <- tab[model_id %in% ids & term == term_ & !is.na(estimate)]
+      if (!nrow(x)) return(NULL)
+      x[, `:=`(variant = names(ids)[match(model_id, ids)], spec = GAP_DAY_SPECS[[st]], model = model_)]
+      x
+    })
+    rbindlist(rows, fill = TRUE)
+  }
+  out <- rbindlist(list(take(b_coef, "log2_gap", "B"), take(c_coef, "w_pre_day_steps", "C")), fill = TRUE)
+  if (nz(c_coef) && "b_full" %in% names(c_coef)) {
+    bd <- c_coef[model_id == "C_adj_both_days" & !is.na(b_full)]
+    if (nrow(bd)) {
+      jr <- rbindlist(list(bd[, .(stream, model = "C", spec = "Adjusted", model_id, variant = "both_full", term = "w_pre_day_steps", estimate = b_full, se = sqrt(v_full), n_gaps, n_persons, status)],
+                           bd[, .(stream, model = "C", spec = "Adjusted", model_id, variant = "both_dbg", term = "w_dbg_steps", estimate = b_dbg, se = sqrt(v_dbg), n_gaps, n_persons, status)],
+                           bd[, {
+                             dlt <- b_full - b_dbg; se_d <- sqrt(pmax(v_full + v_dbg - 2 * cov_full_dbg, 0))
+                             .(model = "C", spec = "Adjusted", model_id = model_id, variant = "difference", term = "b_(d-1) - b_d", estimate = dlt, se = se_d, n_gaps = n_gaps, n_persons = n_persons, status = status)
+                           }, by = stream]), fill = TRUE)
+      jr[, `:=`(conf_low = estimate - 1.96 * se, conf_high = estimate + 1.96 * se, p = 2 * stats::pnorm(abs(estimate / se), lower.tail = FALSE))]
+      jr[variant == "difference", p_holm := stats::p.adjust(p, "holm")]
+      out <- rbind(out, jr, fill = TRUE, use.names = TRUE)
+    }
+  }
+  if (nrow(out) == 0L) return(data.table())
+  if (!"or" %in% names(out)) out[, `:=`(or = NA_real_, or_low = NA_real_, or_high = NA_real_)]
+  out[model == "C" & is.na(or), `:=`(or = exp(estimate), or_low = exp(conf_low), or_high = exp(conf_high))]
+  out <- out[, .(stream, model, spec, model_id, variant = factor(variant, levels = names(GAP_DAY_VARIANTS)), variant_label = GAP_DAY_VARIANTS[variant], term, estimate, se, conf_low, conf_high,
+                 or, or_low, or_high, p, p_holm = if ("p_holm" %in% names(out)) p_holm else NA_real_, n_gaps, n_persons, status)]
+  out[order(model, stream, spec, variant)][]
+}
+
 # Everything finished so far, all streams: coefficient tables, curves, predicted probabilities, failures.
 collect_gap_results <- function(ckpt_dir, cfg, data_keys) {
   b <- collect_units(ckpt_dir, "gapB", cfg, data_keys); cc <- collect_units(ckpt_dir, "gapC", cfg, data_keys)
@@ -571,6 +703,7 @@ collect_gap_results <- function(ckpt_dir, cfg, data_keys) {
        model_B_all_terms         = tag(b$values, b$units, "coef_all"),
        model_C_all_terms         = tag(cc$values, cc$units, "coef_all"),
        gap_failures              = rbindlist(list(b$failures, cc$failures), fill = TRUE))
+  out$gap_day_check <- build_gap_day_check(out$model_B_post_gap_activity, out$model_C_gap_length)
   out$gap_mvpa_effects <- build_gap_mvpa_table(out$model_B_all_terms, out$model_C_all_terms, out$model_B_post_gap_activity,
                                                out$model_C_gap_length, out$gap_collinearity)
   out

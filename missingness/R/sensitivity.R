@@ -14,6 +14,9 @@
 #   cci_removed / cci_as_groups / cci_within_cohort
 #                         the CCI score (strongly tied to the cohorts) left out / entered as groups (reference = the most common group) /
 #                         entered as the score minus the cohort mean (the part that is not cohort membership)
+#   day_before_gap / *_same_rows / both_days
+#                         the PREDICTOR-DAY check (see below): the primary model reads the predictors from the last FULL day d - 1; these read them from the
+#                         day right before the gap (d, which may be a partial day), on all rows / on the rows of the primary model, or both days in one model
 #   main_sleep_only       sleep only: a night counts as observed only if main sleep exists
 #   conditional_logit     within-person comparison, no random-effect assumption
 #   cluster_robust_logit  pooled logistic model, person-clustered standard errors
@@ -112,7 +115,118 @@ lrt_ll <- function(l0, l1, boundary = FALSE) {
   list(chisq = chisq, df = df, p = p)
 }
 
-# ---- the sensitivity suite --------------------------------------------------------------------
+# ---- the predictor-day check ---------------------------------------------------------------------------------------
+#
+# The onset model asks, for every day d with a record, whether a gap starts on d + 1. Day d is the LAST day with a record before the gap; the device may
+# have been taken off during it, so its steps can be low for a technical reason, which creates the association "low steps -> gap tomorrow" without any
+# change in behaviour. The PRIMARY model therefore reads the predictors from the last FULL day, d - 1 (the calendar day before d; as model B uses the first
+# FULL day back, r + 1, and not the partial day of the return). It needs a record on d - 1: a d that is the first record or the first day after an
+# earlier gap has no d - 1 and is not in the primary model. The sensitivity analyses read the predictors from the day right before the gap instead:
+#
+#   day_before_gap             the earlier primary model: predictors of day d, every row with complete predictors on d (a few more rows than the primary model)
+#   last_full_day_same_rows /  the predictors of d - 1 / of d on the rows that have complete predictors on BOTH days (same rows and outcomes, only the
+#   day_before_gap_same_rows   predictor day differs: the clean comparison)
+#   both_days                  day d and the primary term on day d - 1 in ONE model (d - 1 given d), the same rows
+# Reading. A lag of one more day lowers the association even for a real behavioural effect (activity on consecutive days is correlated, rho), so the
+# two single-day estimates alone cannot separate "partial-day artifact" from "real effect". Three quantities do: (1) the joint model and the Wald test of
+# the difference b_d - b_(d-1) (the covariance of the two estimates is in the fit); (2) the observed mean steps z-score on day d and on day d - 1 by whether
+# a gap follows, and above all the CHANGE from d - 1 to d: a partial last day shows as a drop at d that is larger before a gap; (3) the ratio of the
+# estimates against rho. Association, not proof: day d - 1 can itself be partial, and day d can be low for a behavioural reason (illness) that also ends
+# the wear.
+
+# Pieces of the joint model: the two estimates, their variances and covariance (for the test of their difference).
+both_days_fit_summary <- function(fe, V, term) {
+  lag <- paste0("lag1_", term); V <- as.matrix(V)
+  if (!all(c(term, lag) %in% names(fe)) || !all(c(term, lag) %in% rownames(V)))
+    return(data.table(b_cur = NA_real_, v_cur = NA_real_, b_lag = NA_real_, v_lag = NA_real_, cov_cur_lag = NA_real_))
+  data.table(b_cur = unname(fe[[term]]), v_cur = V[term, term], b_lag = unname(fe[[lag]]), v_lag = V[lag, lag], cov_cur_lag = V[term, lag])
+}
+
+# Cluster-robust (person) comparison of x between rows with y = 1 and y = 0: difference of means, its standard error (CR1 sandwich of the regression
+# x ~ y, closed form so that it works on millions of rows) and the two group means with their own cluster-robust intervals.
+day_contrast <- function(x, y, id) {
+  ok <- !is.na(x) & !is.na(y); x <- x[ok]; y <- y[ok]; id <- id[ok]
+  n <- length(x); n1 <- sum(y == 1L); n0 <- n - n1
+  if (n1 < 2L || n0 < 2L) return(NULL)
+  m1 <- mean(x[y == 1L]); m0 <- mean(x[y == 0L]); b <- m1 - m0
+  e <- x - ifelse(y == 1L, m1, m0)
+  S <- rowsum(cbind(e, e * y), id)                              # cluster scores of (intercept, y)
+  meat <- crossprod(S); bread <- solve(matrix(c(n, n1, n1, n1), 2L))
+  g <- nrow(S); V <- bread %*% meat %*% bread * (g / (g - 1)) * ((n - 1) / (n - 2))
+  se <- sqrt(V[2L, 2L])
+  ci1 <- cluster_mean_ci(x[y == 1L], id[y == 1L]); ci0 <- cluster_mean_ci(x[y == 0L], id[y == 0L])
+  list(mean_gap = m1, mean_no_gap = m0, difference = b, se = se, low = b - 1.96 * se, high = b + 1.96 * se,
+       p = 2 * stats::pnorm(abs(b / se), lower.tail = FALSE), ci_gap = ci1, ci_no_gap = ci0)
+}
+
+# The observed pattern behind the check, on the rows of the primary model (identical in every mode): the mean within-person steps z-score of the day
+# right before the gap (d) and of the last full day (d - 1) by whether a gap starts on d + 1, and their change. Returns list(pattern, descriptive) with a
+# `stream` column.
+day_describe <- function(bundle, spec, cfg, term = cfg$primary_term) {
+  spec <- as.list(spec); spec$predictors <- list(spec$predictors[[1L]])
+  dat <- build_onset_data(bundle, spec, cfg, list(day = "both"))
+  ycol <- attr(dat, "ycol"); lagc <- paste0("lag1_", term)
+  d <- data.table(person_id = dat$person_id, y = dat[[ycol]], z0 = dat[[term]], z1 = dat[[lagc]]); rm(dat)
+  d[, dz := z0 - z1]
+  s <- bundle$stream; rho <- suppressWarnings(stats::cor(d$z0, d$z1))
+  qs <- list(z1 = DAY_LABELS[["d1"]], z0 = DAY_LABELS[["d0"]], dz = DAY_LABELS[["dz"]])
+  pat <- list(); des <- list()
+  for (q in names(qs)) {
+    r <- day_contrast(d[[q]], d$y, d$person_id)
+    if (is.null(r)) next
+    des[[q]] <- data.table(stream = s, quantity = qs[[q]], mean_gap = r$mean_gap, mean_no_gap = r$mean_no_gap, difference = r$difference, se = r$se,
+                           low = r$low, high = r$high, p = r$p, n_rows = nrow(d), n_events = sum(d$y == 1L), n_people = uniqueN(d$person_id), rho_d_dminus1 = rho)
+    if (q != "dz") for (g in c("gap", "no_gap")) {
+      ci <- if (g == "gap") r$ci_gap else r$ci_no_gap
+      pat[[paste(q, g)]] <- data.table(stream = s, day = qs[[q]], group = if (g == "gap") "A gap starts the next day" else "No gap the next day",
+                                       mean_z = ci$mean, low = ci$lo, high = ci$hi, n_rows = ci$n_gaps, n_people = ci$n_persons)
+    }
+  }
+  list(pattern = rbindlist(pat), descriptive = rbindlist(des))
+}
+
+# Labels of the two days (shared by the table and the figures).
+DAY_LABELS <- c(d1 = "Last full day (d - 1)", d0 = "Day before the gap (d)", dz = "Change from d - 1 to d")
+DAY_MODEL_LEVELS <- c("Primary model: last full day d - 1", "Last full day d - 1, rows with both days", "Day before the gap d, rows with both days",
+                      "Day before the gap d, all rows", "Joint model: last full day d - 1", "Joint model: day before the gap d", "Difference d minus d - 1 (joint model)")
+
+# The table of the check: the primary model, the day-before-gap fits, and the formal difference of the joint model, per stream.
+#   sens: the stored sensitivity rows (all analyses); info: the `info` rows of the joint fits (both_days_fit_summary + loglik...)
+day_check_table <- function(sens, info, desc, cfg) {
+  term <- cfg$primary_term; lag <- paste0("lag1_", term)
+  if (!nz(sens) || !any(sens$analysis %in% c("day_before_gap", "day_before_gap_same_rows", "last_full_day_same_rows", "both_days"))) return(data.table())
+  take <- function(analysis_, term_, label) {
+    x <- sens[analysis == analysis_ & term == term_ & !is.na(estimate)]
+    if (!nrow(x)) return(NULL)
+    x[, .(stream, model = label, term = term_, estimate, se, or, or_low, or_high, p, n_events, n_persons_event, status)]
+  }
+  out <- rbindlist(list(
+    take("main", term, DAY_MODEL_LEVELS[1L]),
+    take("last_full_day_same_rows", term, DAY_MODEL_LEVELS[2L]),
+    take("day_before_gap_same_rows", term, DAY_MODEL_LEVELS[3L]),
+    take("day_before_gap", term, DAY_MODEL_LEVELS[4L]),
+    take("both_days", lag, DAY_MODEL_LEVELS[5L]),
+    take("both_days", term, DAY_MODEL_LEVELS[6L])), fill = TRUE)
+  if (nrow(out) == 0L) return(out)
+  out[, model := as.character(model)]
+  if (nz(info) && "b_cur" %in% names(info)) {
+    ct <- info[!is.na(b_cur), {
+      dlt <- b_cur - b_lag; se <- sqrt(pmax(v_cur + v_lag - 2 * cov_cur_lag, 0))
+      .(model = DAY_MODEL_LEVELS[7L], term = "b_d - b_(d-1)", estimate = dlt, se = se, or = exp(dlt), or_low = exp(dlt - 1.96 * se), or_high = exp(dlt + 1.96 * se),
+        p = 2 * stats::pnorm(abs(dlt / se), lower.tail = FALSE), n_events = n_events, n_persons_event = n_persons_event, status = status)
+    }, by = stream]
+    if (nrow(ct)) {
+      ct[, p_holm := stats::p.adjust(p, "holm")]
+      lr <- merge(out[model == DAY_MODEL_LEVELS[3L], .(stream, b_day_d_alone = estimate)], out[model == DAY_MODEL_LEVELS[2L], .(stream, b_full_day_alone = estimate)], by = "stream")
+      lr[, lagged_over_current := b_full_day_alone / b_day_d_alone]
+      ct <- merge(ct, lr[, .(stream, lagged_over_current)], by = "stream", all.x = TRUE)
+      if (nz(desc)) ct <- merge(ct, unique(desc[, .(stream, rho_d_dminus1)]), by = "stream", all.x = TRUE)
+      out <- rbind(out, ct, fill = TRUE)
+    }
+  }
+  out[, model := factor(model, levels = DAY_MODEL_LEVELS)]
+  out[order(stream, as.integer(model))][]
+}
 
 # Everything the alternative estimators share: the model data of the primary spec, its event counts
 # and its formula text. Built inside the unit that needs it (a worker), never kept between units.
@@ -183,6 +297,20 @@ run_sensitivity_stage <- function(s, bundle, alt, prim, cfg, ckpt_dir, dkey, ter
     refit("cci_within_cohort", list(cci_mode = "within_cohort"))
   }
   if (s == "sleep" && !is.null(alt)) refit("main_sleep_only", list(), term, alt)
+  # the predictor-day check (see above): the primary model reads day d - 1; here the predictors of the day right before the gap (d), and both days in one model
+  refit("day_before_gap", list(day = "day_before_gap"))
+  refit("last_full_day_same_rows", list(day = "last_full_day", same_rows = TRUE))
+  refit("day_before_gap_same_rows", list(day = "day_before_gap", same_rows = TRUE))
+  unit("both_days", function() {
+    r <- fit_onset_spec(bundle$get(), prim, cfg, list(day = "both"))
+    out <- extract_term_row(r, "both_days", term)
+    setattr(out, "day_info", r$info)                        # the two estimates, their variances and covariance: the formal difference
+    out
+  })
+  unit("day_description", function() {
+    b <- bundle$get()
+    isolated(cfg, { x <- day_describe(b, prim, cfg); setattr(x, "kind", "day_description"); x })
+  })
 
   # estimators that reuse the model data: each builds it inside its own worker and frees it again
   with_context <- function(id, body)
@@ -219,13 +347,19 @@ run_sensitivity_stage <- function(s, bundle, alt, prim, cfg, ckpt_dir, dkey, ter
 # All finished sensitivity rows (all streams) + failures.
 collect_sensitivity_results <- function(ckpt_dir, cfg, data_keys) {
   cu <- collect_units(ckpt_dir, "sensitivity", cfg, data_keys)
+  is_desc <- vapply(cu$values, function(v) identical(attr(v, "kind"), "day_description"), logical(1))     # the predictor-day pattern is not a row of the model table
+  desc_vals <- cu$values[is_desc]; desc_st <- cu$units$stream[is_desc]
+  cu$values <- cu$values[!is_desc]; cu$units <- cu$units[!is_desc]
   tab <- rbindlist(Map(function(v, st) cbind(stream = st, v), cu$values, cu$units$stream), fill = TRUE)
   gv  <- rbindlist(Map(function(v, st) { g <- attr(v, "gvif"); if (is.null(g)) NULL else cbind(stream = st, g) }, cu$values, cu$units$stream), fill = TRUE)
+  fd_info <- rbindlist(Map(function(v, st) { g <- attr(v, "day_info"); if (is.null(g)) NULL else cbind(stream = st, g) }, cu$values, cu$units$stream), fill = TRUE)
+  fd_pat  <- rbindlist(lapply(desc_vals, `[[`, "pattern"), fill = TRUE); fd_des <- rbindlist(lapply(desc_vals, `[[`, "descriptive"), fill = TRUE)
   if (nrow(tab) == 0L) return(list(sensitivity = tab, sensitivity_all_terms = tab, sensitivity_collinearity = gv, sensitivity_failures = cu$failures))
   # `sensitivity`: the tested term of every analysis (as before); `sensitivity_all_terms`: all within-person terms
   list(sensitivity = tab[tested %in% TRUE][, tested := NULL][],
        sensitivity_all_terms = tab[!analysis %in% c("spline_vs_linear", "random_slope")][, tested := NULL][],   # estimates only (the other two are tests)
-       sensitivity_collinearity = gv, sensitivity_failures = cu$failures)
+       sensitivity_collinearity = gv, sensitivity_failures = cu$failures,
+       day_check = day_check_table(tab, fd_info, fd_des, cfg), day_pattern = fd_pat, day_descriptive = fd_des)
 }
 
 # ---- engine check -----------------------------------------------------------------------------------
