@@ -1,22 +1,25 @@
 # Run-in analysis (runin.R): the measure, the rows that are modelled, and the variants of the model.
 
-# three people with a known run-in (28 days): person 1 misses days 3 and 10 of the run-in, person 2 has a 20-day follow-up only, person 3 misses nothing
+# three people: person 1 misses study days 3 and 10 (before the run-in window), person 2 has a 20-day follow-up only, person 3 misses nothing
 runin_days_fixture <- function() {
   d0 <- as.Date("2023-03-01")
   one <- function(id, drop, len) data.table(person_id = id, date = d0 + setdiff(0:(len - 1L), drop - 1L))
   rbind(one(1L, c(3L, 10L), 60L), one(2L, integer(), 20L), one(3L, integer(), 45L))
 }
 
-test_that("missing days of the run-in: counted among the first N days only, NA when the follow-up is shorter, the first record is day 1", {
-  rt <- runin_person_table(runin_days_fixture(), 28L)
-  expect_equal(rt[order(person_id), runin_missing], c(2L, NA, 0L))
+test_that("missing days of the run-in: counted among study days start..end only, NA when the follow-up is shorter than end, the first record is day 1", {
+  d0 <- as.Date("2023-03-01")
+  rt <- runin_person_table(runin_days_fixture(), 15L, 42L)
+  expect_equal(rt[order(person_id), runin_missing], c(0L, NA, 0L))                                     # days 3 and 10 lie in the skipped novelty period
+  expect_equal(runin_person_table(runin_days_fixture(), 1L, 28L)[order(person_id), runin_missing], c(2L, NA, 0L))   # a window from day 1 counts them
   # observed days AFTER the run-in never change the measure (no look-ahead)
-  d <- runin_days_fixture(); d2 <- d[!(person_id == 1L & date > as.Date("2023-03-01") + 27L)]
-  expect_equal(runin_person_table(d2, 28L)[person_id == 1L, runin_missing], 2L)
-  # a gap that starts inside the run-in and runs on past it counts only its days inside the run-in
-  d3 <- d[!(person_id == 3L & date >= as.Date("2023-03-01") + 26L & date <= as.Date("2023-03-01") + 40L)]
-  expect_equal(runin_person_table(d3, 28L)[person_id == 3L, runin_missing], 2L)
-  expect_equal(runin_person_table(d, 14L)[order(person_id), runin_missing], c(2L, 0L, 0L))            # N is a setting
+  d <- runin_days_fixture(); d2 <- d[!(person_id == 1L & date > d0 + 41L)]
+  expect_equal(runin_person_table(d2, 15L, 42L)[person_id == 1L, runin_missing], 0L)
+  # a gap that runs into or out of the window counts only its days inside the window (study days 10-16 -> days 15, 16; days 41-51 -> days 41, 42)
+  d3 <- d[!(person_id == 3L & date >= d0 + 9L & date <= d0 + 15L)][!(person_id == 1L & date >= d0 + 40L & date <= d0 + 50L)]
+  expect_equal(runin_person_table(d3, 15L, 42L)[order(person_id), runin_missing], c(2L, NA, 2L))
+  expect_equal(runin_person_table(d, 15L, 50L)[order(person_id), runin_missing], c(0L, NA, NA))        # follow-up of 45 days < end
+  expect_equal(runin_length(make_config()), 28L)
 })
 
 test_that("categories and the centred log scale", {
@@ -41,14 +44,14 @@ test_that("the onset data of the run-in analysis hold only days AFTER the run-in
   s <- small_study(-0.5); cfg <- s$cfg; b <- s$b
   expect_true("runin_missing" %in% names(b$rs))
   spec <- primary_spec(cfg)
-  dref <- build_onset_data(b, spec, cfg, list(runin_days = 28L, runin_terms = "reference"))
-  dint <- build_onset_data(b, spec, cfg, list(runin_days = 28L, runin_terms = "interaction"))
+  dref <- build_onset_data(b, spec, cfg, list(runin_days = cfg$runin$end, runin_terms = "reference"))
+  dint <- build_onset_data(b, spec, cfg, list(runin_days = cfg$runin$end, runin_terms = "interaction"))
   expect_equal(nrow(dref), nrow(dint))
   expect_true(all(c("cov0", "cov0_lin", "cov0_cat") %in% names(dint)))
   all_rows <- build_onset_data(b, spec, cfg)
   expect_lt(nrow(dref), nrow(all_rows))
   # every row of the run-in data is a day after the run-in of a person with a complete run-in
-  n_after <- sum(b$rs$study_day > 28L & !is.na(b$rs$runin_missing))
+  n_after <- sum(b$rs$study_day > cfg$runin$end & !is.na(b$rs$runin_missing))
   expect_lte(nrow(dref), n_after); expect_gt(nrow(dref), 0.95 * n_after)
   expect_equal(mean(unique(dint[, .(person_id, cov0)])$cov0), 0, tolerance = 1e-10)
   expect_false("runin_missing" %in% names(build_onset_data(b, spec, cfg)))                              # the other analyses never see it
@@ -57,7 +60,7 @@ test_that("the onset data of the run-in analysis hold only days AFTER the run-in
 test_that("onset variants: same rows, the interaction is named by its terms, the LRT and the effect at a given run-in follow from the stored pieces", {
   s <- small_study(-0.5); cfg <- s$cfg; b <- s$b; spec <- primary_spec(cfg)
   fits <- lapply(setNames(RUNIN_ONSET_VARIANTS, RUNIN_ONSET_VARIANTS), function(v)
-    suppressWarnings(fit_onset_spec(b, spec, cfg, variant = list(runin_days = 28L, runin_terms = v))))
+    suppressWarnings(fit_onset_spec(b, spec, cfg, variant = list(runin_days = cfg$runin$end, runin_terms = v))))
   expect_true(all(vapply(fits, function(f) f$info$status == "ok", TRUE)))
   expect_equal(uniqueN(vapply(fits, function(f) f$info$n_rows, 1)), 1L)
   expect_false("cov0" %in% fits$reference$coef$term); expect_true("cov0" %in% fits$main$coef$term)
@@ -92,7 +95,7 @@ test_that("a planted wear trait is found by the run-in term (H1) and absent when
     dt <- thin(strength, seed)
     b <- suppressMessages(prepare_stream_bundle("activity", c(dt, inp$day_tables[c("sleep", "hr")]), inp$persons, cfg, trailing = FALSE))
     spec <- primary_spec(cfg)
-    r <- suppressWarnings(fit_onset_spec(b, spec, cfg, variant = list(runin_days = 28L, runin_terms = "main")))
+    r <- suppressWarnings(fit_onset_spec(b, spec, cfg, variant = list(runin_days = cfg$runin$end, runin_terms = "main")))
     r$coef[term == "cov0", .(estimate, p)]
   }
   planted <- fit_cov0(1.0, 3); null <- fit_cov0(0.0, 3)
@@ -121,7 +124,7 @@ test_that("gap-level data carry the run-in; models B and C use only gaps after t
   } else expect_true(cr$coef$status %in% c("po_rejected", "not_estimable"))
   # models fitted with the run-in have their own checkpoint keys
   expect_false(identical(ckpt_cfg_part(cfg, "runin_gapB"), ckpt_cfg_part(cfg, "gapB")))
-  cfg2 <- cfg; cfg2$runin$days <- 14L
+  cfg2 <- cfg; cfg2$runin$start <- 1L; cfg2$runin$end <- 28L
   expect_false(identical(ckpt_cfg_part(cfg, "runin_onset"), ckpt_cfg_part(cfg2, "runin_onset")))
   expect_identical(ckpt_cfg_part(cfg, "onset"), ckpt_cfg_part(cfg2, "onset"))                            # the other analyses do not depend on the run-in length
 })
@@ -129,7 +132,7 @@ test_that("gap-level data carry the run-in; models B and C use only gaps after t
 test_that("tests, shape, effect by missing days and quality tables are built from the stored fits; primary and sensitivity rows are kept apart", {
   s <- small_study(-0.5); cfg <- s$cfg; b <- s$b; spec <- primary_spec(cfg)
   fits <- lapply(setNames(RUNIN_ONSET_VARIANTS, RUNIN_ONSET_VARIANTS), function(v)
-    suppressWarnings(fit_onset_spec(b, spec, cfg, variant = list(runin_days = 28L, runin_terms = v))))
+    suppressWarnings(fit_onset_spec(b, spec, cfg, variant = list(runin_days = cfg$runin$end, runin_terms = v))))
   res <- list(runin_onset_coefficients = rbindlist(lapply(fits, `[[`, "coef"), fill = TRUE), runin_onset_models = rbindlist(lapply(fits, `[[`, "info"), fill = TRUE))
   tt <- runin_tests(res, cfg)
   prim <- tt[analysis == "primary"]

@@ -111,7 +111,7 @@ stream_inputs <- function(store, stream, cfg, extra_cols = character()) {
 #   "variables"        = person-level % of days missing against every model variable (cohort, sex, watch version, age, between-person
 #                        predictor levels): figures outcome_by_variable_*, tables outcome_variable_*. Needs Cell 8b for the watch version.
 #   "device"           = missing share and composition of the Fitbit device version by cohort (needs Cells 6c and 8b); no model.
-#   "runin_description" = the run-in (first cfg$runin$days days of follow-up): distribution of missing days, the observed gap rate after
+#   "runin_description" = the run-in (study days cfg$runin$start..end of follow-up): distribution of missing days, the observed gap rate after
 #                        the run-in by run-in group (H1), and the steps-gap curve by run-in group (H2); no model.
 #   "runin"            = that description first, then the primary onset model and models B and C on the days / gaps AFTER the run-in,
 #                        without a run-in term and with the run-in and its interaction (see runin.R).

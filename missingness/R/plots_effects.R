@@ -178,7 +178,7 @@ fmt_p <- function(p) ifelse(is.na(p), "NA", ifelse(p < 0.001, "<0.001", sprintf(
 fmt_peq <- function(p) ifelse(is.na(p), "p = NA", ifelse(p < 0.001, "p < 0.001", paste0("p = ", sprintf("%.2g", p))))      # "p < 0.001" / "p = 0.03"
 stream_levels <- function(x) factor(x, levels = intersect(c("activity", "sleep", "hr"), unique(x)))
 
-subtitle_runin <- function(cfg) paste0(ov_wrap(paste0("Only days after the first ", cfg$runin$days, " days of follow-up are modelled (the run-in itself never is). Run-in term: per doubling of (1 + missing days in the run-in), centred. ",
+subtitle_runin <- function(cfg) paste0(ov_wrap(paste0("Run-in = study ", runin_window_label(cfg), " (the first ", cfg$runin$start - 1L, " days are skipped: novelty effect). Only days after day ", cfg$runin$end, " are modelled (the run-in itself never is). Run-in term: per doubling of (1 + missing days in the run-in), centred. ",
                                                         covariate_note(cfg)), 100), "\nThe first colour (dark) is the model without a run-in term.")
 
 # The tests of H2 as caption lines (statistics are written below the figure, outside the panels).
@@ -206,7 +206,7 @@ plot_runin_distribution <- function(dist, cfg) {
     scale_color_identity() + scale_fill_manual(values = runin_cat_palette(levels(d$category)), drop = FALSE) +
     scale_y_continuous(limits = c(0, 109), breaks = seq(0, 100, 25)) +
     facet_wrap(~stream_f, nrow = 1) +
-    labs(title = sprintf("Run-in: Missing Days in the First %d Days of Follow-up", cfg$runin$days),
+    labs(title = sprintf("Run-in: Missing Days in Study Days %d-%d of Follow-up", cfg$runin$start, cfg$runin$end),
          subtitle = ov_wrap("Description, no model. 0 = a record on every run-in day. Gaps analysed later start AFTER the run-in, so this measure always comes first. Question: how consistently do people wear the device at the start, and does it differ by cohort?", 100),
          x = NULL, y = "Share of people (%)", fill = "Missing days\nin the run-in") +
     forest_theme() + theme(axis.text.x = element_text(angle = 30, hjust = 1))
@@ -233,7 +233,7 @@ plot_runin_rate <- function(rate, assoc, cfg) {
     scale_color_manual(values = pal) + scale_fill_manual(values = pal) +
     facet_wrap(~stream_f, nrow = 1, scales = "free_y") +
     expand_limits(y = 0) +
-    labs(title = sprintf("H1: Missing Days in the First %d Days and Gaps Afterwards", cfg$runin$days),
+    labs(title = sprintf("H1: Missing Days in Study Days %d-%d and Gaps Afterwards", cfg$runin$start, cfg$runin$end),
          subtitle = ov_wrap("H1: people with more missing days in the run-in start new gaps more often later (rates rise from left to right). Unadjusted, descriptive; only days after the run-in. Interval: people are the clusters. The adjusted test of H1 is the run-in main effect (runin_tests.tsv).", 100),
          x = "Missing days in the run-in", y = "New gaps per 100 observed days (after the run-in)", color = NULL, fill = NULL,
          caption = paste(c(interval_caption(style), if (length(stat)) ov_wrap(paste0("Person-level Spearman correlation, run-in missing days vs the person's later rate: ", paste(stat, collapse = " | ")), 150)), collapse = "\n")) +

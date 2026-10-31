@@ -44,8 +44,8 @@ test_that("partial-wear exclusion and the run-in rows follow the predictor day",
   d  <- build_onset_data(b2, spec, cfg, list(day = "day_before_gap")); d2 <- build_onset_data(b2, spec, cfg, list(day = "day_before_gap", drop_partial = TRUE))
   expect_equal(nrow(a) - nrow(a2), sum(okp$prev_pw))                      # the primary model drops the rows whose last FULL day d - 1 is a partial day ...
   expect_equal(nrow(d) - nrow(d2), sum(okd$pw_act))                       # ... the day-before-the-gap analysis the rows whose day d is
-  r <- build_onset_data(b, spec, cfg, list(runin_days = 28L)); expect_lt(nrow(r), nrow(a)); expect_true(all(!is.na(r$runin_missing)))
-  expect_equal(nrow(r), sum(!is.na(okp$runin_missing) & okp$prev_study_day > 28L))   # the days the predictors are read from lie after the run-in
+  r <- build_onset_data(b, spec, cfg, list(runin_days = cfg$runin$end)); expect_lt(nrow(r), nrow(a)); expect_true(all(!is.na(r$runin_missing)))
+  expect_equal(nrow(r), sum(!is.na(okp$runin_missing) & okp$prev_study_day > cfg$runin$end))   # the days the predictors are read from lie after the run-in
 })
 
 test_that("the contrast helper agrees with a cluster-robust regression (CR1 sandwich)", {

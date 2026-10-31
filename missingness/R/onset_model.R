@@ -89,7 +89,7 @@ build_onset_formula <- function(preds, adjusted, k, baseline = "whole", drop_col
 #   drop_partial  TRUE -> drop days flagged as partial wear (own stream or activity)
 #   first_gap     TRUE -> keep only days up to each person's first gap onset
 #   cohort        a cohort label -> fit within that cohort only
-#   runin_days    N -> the run-in analysis (runin.R): only prior days AFTER the first N days of follow-up (study_day > N) of people with
+#   runin_days    E -> the run-in analysis (runin.R; E = cfg$runin$end, the last day of the run-in): only prior days with study_day > E of people with
 #                 a complete run-in; adds cov0 (log2(1 + missing days in the run-in), centred), cov0_lin and cov0_cat
 #   day           WHICH DAY the predictors are read from (default cfg$onset$predictor_day = "last_full_day"). Let d be the last day with a record before a
 #                 possible gap (the gap starts on d + 1). The device may be taken off during d, so d can be a partial day.
@@ -174,7 +174,7 @@ build_onset_data <- function(bundle, spec, cfg, variant = list()) {
     out[, c("prev_gap_len", "days_since_return") := NULL]
     if (cci_mode == "within_cohort") { out[, cci := cci_wc]; out[, cci_wc := NULL] }
   }
-  if (!is.null(variant$runin_days)) add_runin_columns(out, variant$runin_days, cfg)     # after the person sample, so the centring refers to the people analysed
+  if (!is.null(variant$runin_days)) add_runin_columns(out, runin_length(cfg), cfg)     # after the person sample, so the centring refers to the people analysed
   attr(out, "ycol") <- ycol
   out[]
 }

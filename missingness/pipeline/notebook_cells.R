@@ -144,8 +144,8 @@ print(res$missing_pct_by_stratum_tests[family == "groups_within_cohort" & test !
 print(res$missing_trend_tests[, .(stream, variable, cohort, unit, or = round(odds_ratio, 3), or_low = round(or_low, 3), or_high = round(or_high, 3),
       p = signif(p, 3), p_holm = signif(p_holm, 3), status)])
 
-# ==== CELL 11c   (run-in: description of the wear in the FIRST 28 days, no model; builds each stream's tables once, a few minutes per stream)
-# Run-in = the first cfg$runin$days (28) days of each person's follow-up in the stream. Missing days in the run-in is the wear measure of the run-in
+# ==== CELL 11c   (run-in: description of the wear in study days 15-42, no model; builds each stream's tables once, a few minutes per stream)
+# Run-in = study days cfg$runin$start..end (15-42, 28 days) of each person's follow-up in the stream; days 1-14 are skipped (novelty effect). Missing days in the run-in is the wear measure of the run-in
 # analysis; everything modelled later (Cell 18) starts AFTER the run-in, so the measure always comes first (whole-period coverage is never used:
 # it contains the gaps that are the outcome). Hypotheses: H1 = more missing days in the run-in -> more gaps later; H2 = the steps effect depends on
 # the run-in. Figures: runin_distribution, runin_rate_by_category (H1), runin_steps_by_group_<stream> (H2); tables: runin_flow, runin_distribution,
@@ -247,8 +247,8 @@ res <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg_fast, OUT_DIR, 
                                 onset_roles = "exploratory", model_streams = c("activity", "sleep", "hr"))
 print(table(res$onset_models$role, res$onset_models$stream))
 
-# ==== CELL 18   (run-in analysis, PRIMARY: the onset model, model B and model C on the days / gaps AFTER the first 28 days, without a run-in term and with the run-in AND its interaction; long)
-# The description of Cell 11c runs first inside this call. Same rows in both models. Run-in = log2(1 + missing days in the first 28 days), centred, per doubling;
+# ==== CELL 18   (run-in analysis, PRIMARY: the onset model, model B and model C on the days / gaps AFTER study day 42, without a run-in term and with the run-in AND its interaction; long)
+# The description of Cell 11c runs first inside this call. Same rows in both models. Run-in = log2(1 + missing days in study days 15-42), centred, per doubling;
 # its interaction is with the steps term (onset, C) / the gap length (B). H1 = run-in effect, H2 = interaction (the confirmatory test, Holm over the streams),
 # H3 = does the primary steps effect change. Figures (all prefixed runin_, apart from the main analysis): runin_primary_effect, runin_steps_by_missing_days,
 # runin_onset_all_terms_other_<stream>, runin_gapB_all_terms_<stream>, runin_gapC_all_terms_<stream>, and ONE GVIF figure per model: runin_gvif_onset_<stream>,

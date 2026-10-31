@@ -191,7 +191,7 @@ prepare_stream_bundle <- function(stream, day_tables, persons, cfg, observed_fil
   # person covariates
   cov <- person_covariates(persons, cfg)                 # cohort, age10, sex2, CCI and device family (covariates.R)
   add_columns(cov, "person_id")
-  add_columns(runin_person_table(days, cfg$runin$days)[, .(person_id, runin_missing)], "person_id")      # missing days in the first days of follow-up (runin.R); only the run-in models use it
+  add_columns(runin_person_table(days, cfg$runin$start, cfg$runin$end)[, .(person_id, runin_missing)], "person_id")      # missing days in the run-in window (runin.R); only the run-in models use it
   setkey(rs, person_id, date)
 
   list(stream = stream, gaps = gaps, rs = rs, scales = scales,

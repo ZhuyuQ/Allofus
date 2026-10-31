@@ -14,7 +14,7 @@ primary models, is the last model cell):
 | 2 | temporal structure of missingness | 3 | 11 |
 | 3 | data quality: device version | 10b | 11d |
 | 4 | primary models: gap onset (primary, model A, model D), gap-level models B and C, exploratory specifications | 5, 7 | 12-15, 17 |
-| 5 | run-in analysis: wear in the first 28 days and gaps later (onset, B, C; H1-H3) | 10 | 11c, 18 |
+| 5 | run-in analysis: wear in study days 15-42 and gaps later (onset, B, C; H1-H3) | 10 | 11c, 18 |
 | 6 | sensitivity analyses (incl. full-observation-period standardization) | 6 | 16 |
 | 7 | model diagnostics (multicollinearity, joint term tests, convergence) and integrated interpretation | 11, 9 | printed by 12-18 |
 
@@ -32,7 +32,7 @@ resumption*; leading missingness and permanent drop-out are invisible by constru
 layers: (1) descriptive person-level missingness and its temporal structure; (2) a mixed-effects logistic
 model of **gap onset** given the previous day's values, whose predictors are standardized only with data observed
 **before** each day; (3) two exploratory models that use **gap length** (which is only known after a gap ends and is
-therefore never a predictor of onset); (4) the same models on the days after a **run-in** of the first 28 days, with and without the person's wear in that run-in, sensitivity analyses
+therefore never a predictor of onset); (4) the same models on the days after a **run-in** of study days 15-42 (days 1-14 skipped for the novelty effect), with and without the person's wear in that run-in, sensitivity analyses
 (including a full-observation-period standardization) and collinearity diagnostics. No disease-label prediction
 and no mixture model is part of the analysis.
 
@@ -506,11 +506,13 @@ analysis uses only days that lie **before** the days it models.
 
 ### 10.1 Definition
 
-* **Run-in** = study days `1..N` of each person in the modelled stream (`cfg$runin$days`, `N = 28`; study day 1 = the first record, which is observed by
-  definition). **`m` = missing days in the run-in** = `N - observed days among them` (`runin_person_table()`); NA if the follow-up is shorter than `N` days.
-  Days after the run-in never enter `m`: a gap that starts inside the run-in and runs past it counts only its days inside the run-in.
-* **Modelled days.** Onset model: rows whose predictor day (the last full day `d - 1`) has `study_day > N`, of people with a complete run-in (the outcome is a gap starting on `d + 1`); models B and C:
-  gaps whose predictor day (the last full day before the gap, d - 1) has `study_day > N`. **Every variant of a model uses exactly the same rows.**
+* **Run-in** = study days `S..E` of each person in the modelled stream (`cfg$runin$start` = 15, `cfg$runin$end` = 42, `N = E - S + 1 = 28`). Days `1..S-1` are
+  skipped: wear is high in the first two weeks with a new device (novelty effect), so those days say little about the person's usual wear; they are never modelled either
+  (study day 1 = the first record, which is observed by
+  definition). **`m` = missing days in the run-in** = `N - observed days among days S..E` (`runin_person_table()`, 0..N); NA if the follow-up is shorter than `E` days.
+  Days before or after the run-in never enter `m`: a gap that starts inside the run-in and runs past it counts only its days inside the run-in.
+* **Modelled days.** Onset model: rows whose predictor day (the last full day `d - 1`) has `study_day > E`, of people with a complete run-in (the outcome is a gap starting on `d + 1`); models B and C:
+  gaps whose predictor day (the last full day before the gap, d - 1) has `study_day > E`. **Every variant of a model uses exactly the same rows.**
 * **Coding.** `cov0 = log2(1 + m)`, centred at its mean over the *people* analysed (`add_runin_columns()`): one coefficient = per **doubling of (1 + missing days)**; the
   centring keeps the main effect of the steps term the effect at the average run-in and makes the product `steps x cov0` nearly uncorrelated with both terms.
   Why the log scale: most people have `m = 0` (a point mass) and the rest are right-skewed, so a straight line in `m` is dominated by the tail and by the
@@ -566,9 +568,9 @@ gap rate, Bonett-Wright interval, Holm over cohorts). All unadjusted and descrip
 
 ### 10.6 Limits
 
-* The measure is noisy (28 days): the run-in coefficients are attenuated; `cfg$runin$days` can be changed (another length is another result, never mixed in a checkpoint).
+* The measure is noisy (28 days): the run-in coefficients are attenuated; `cfg$runin$start` / `end` can be changed (another window is another result, never mixed in a checkpoint).
 * The 70% observed-days selection of the cohort ties early to later coverage (people with a poor start must have compensated later).
-* The first `N` days of every person, and people with a shorter follow-up, are not modelled; a gap that starts in the run-in is a prior gap for the history terms.
+* The first `E` days of every person, and people with a shorter follow-up, are not modelled; a gap that starts in the run-in is a prior gap for the history terms.
 * Association, not causation: early wear is a marker of how a person engages with the device.
 
 ## 10b. Fitbit device version: missing and composition by cohort [`device.R`]
@@ -663,8 +665,8 @@ Regression check: the `full_period` standardization reproduces the previous vers
 
 Simulation check of the primary estimate (24 replicates of a simulated study of 300 people with a **known** effect, log-odds -0.5 per +1 within-person SD of log steps; script
 `pipeline/validate_simulation.R`): see section 13.1. **Not validated**: any behaviour on the real data (distribution of the run-in, real collinearity, real
-effect of the baseline definition); the run-in models at full size (time and memory were measured for the primary models only, see README); the run-in length of 28 days
-(a design choice, change `cfg$runin$days` to check it); the sensitivity of the conclusions to the 7-day minimum baseline.
+effect of the baseline definition); the run-in models at full size (time and memory were measured for the primary models only, see README); the run-in window of days 15-42
+(a design choice, change `cfg$runin$start` / `end` to check it); the sensitivity of the conclusions to the 7-day minimum baseline.
 
 ### 13.1 Simulation results (not real data)
 

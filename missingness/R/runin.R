@@ -7,11 +7,11 @@
 # the gaps that are the outcome (a person with more gaps has lower coverage by construction), so stratifying or adjusting on it
 # conditions on the outcome. The run-in measure is computed from days that all lie BEFORE the days that are modelled:
 #
-#   run-in            study days 1..N of the person in the modelled stream (N = cfg$runin$days, 28)
-#   missing days m    N - observed days among them (0 .. N-1; the first record is observed by definition). NA if the person's
-#                     follow-up is shorter than N days.
-#   modelled days     onset model: rows whose predictor day (the last full day d - 1) has study_day > N (the outcome is a gap starting on d + 1);
-#                     models B and C: gaps whose last observed day before the gap has study_day > N.
+#   run-in            study days S..E of the person in the modelled stream (S = cfg$runin$start, 15; E = cfg$runin$end, 42; N = E - S + 1 = 28).
+#                     Days 1..S-1 are skipped: the novelty effect of a new device (high wear in the first two weeks) would otherwise drive the measure.
+#   missing days m    N - observed days among days S..E (0 .. N). NA if the person's follow-up is shorter than E days.
+#   modelled days     onset model: rows whose predictor day (the last full day d - 1) has study_day > E (the outcome is a gap starting on d + 1);
+#                     models B and C: gaps whose last observed day before the gap has study_day > E.
 #   cov0              log2(1 + m), centred at its mean over the people analysed (one coefficient = per DOUBLING of 1 + m; the
 #                     centring keeps the main effect of the steps term the effect at the average run-in)
 #   cov0_cat          0 | 1 | 2-3 | >=4 missing days, reference 0 (shape check; onset only)
@@ -48,17 +48,21 @@ RUNIN_SCHEMA <- 1L          # version of the stored run-in results (part of ever
 
 # ---- the run-in measure ------------------------------------------------------------------------------------------------
 
-# Per person: first / last record, and the missing days of the run-in (NA if the follow-up is shorter than n days).
+# Per person: first / last record, and the missing days of the run-in = study days start..end (NA if the follow-up is shorter than end days).
 #   days: day table of the stream (person_id, date; one row per observed day)
-runin_person_table <- function(days, n) {
+runin_person_table <- function(days, start, end) {
   d <- days[, .(person_id, date)]
-  out <- d[, .(first_date = min(date), last_date = max(date), n_in = sum(date <= min(date) + n - 1L)), by = person_id]
-  out[, runin_missing := fifelse(as.integer(last_date - first_date) + 1L >= n, as.integer(n - n_in), NA_integer_)]
+  out <- d[, { f <- min(date); .(first_date = f, last_date = max(date), n_in = sum(date >= f + start - 1L & date <= f + end - 1L)) }, by = person_id]
+  out[, runin_missing := fifelse(as.integer(last_date - first_date) + 1L >= end, as.integer(end - start + 1L - n_in), NA_integer_)]
   out[, n_in := NULL]
   out[]
 }
 
 # Labels of the missing-days categories from the upper bounds: c(0, 1, 3) -> "0", "1", "2-3", ">=4".
+# Length of the run-in window (days) and its label for titles ("days 15-42").
+runin_length <- function(cfg) as.integer(cfg$runin$end - cfg$runin$start + 1L)
+runin_window_label <- function(cfg) sprintf("days %d-%d", cfg$runin$start, cfg$runin$end)
+
 runin_category_labels <- function(cfg) {
   b <- cfg$runin$cat_breaks
   lo <- c(b[1L], b[-length(b)] + 1L)
@@ -111,7 +115,7 @@ runin_fit_summary <- function(fit, V, ftxt, key_term, center) {
 #   bundle: prepare_stream_bundle() result; k: gap definition of the outcome (primary); term: the within-person steps term
 # Returns list(flow, distribution, rate, steps_by_group, association), every table with a `stream` column.
 runin_describe <- function(bundle, cfg, k = cfg$onset$primary_k, term = cfg$primary_term) {
-  n_days <- cfg$runin$days; ycol <- paste0("y_ge", k); s <- bundle$stream
+  n_days <- cfg$runin$end; ycol <- paste0("y_ge", k); s <- bundle$stream     # rows after the run-in
   rs <- bundle$rs
   pp_all <- unique(rs[, .(person_id, cohort, runin_missing)])
   pd <- rs_at_predictor_day(rs, c(term, "study_day"), cfg)                  # the term and the study day on the day the model reads its predictors from
@@ -188,7 +192,7 @@ runin_describe <- function(bundle, cfg, k = cfg$onset$primary_k, term = cfg$prim
 #   with_models FALSE: only the description unit;  sensitivity TRUE: also the other forms (main, categorical, linear)
 run_runin_stage <- function(s, bundle, gap_data, grid, cfg, ckpt_dir, dkey, with_models = TRUE, sensitivity = FALSE) {
   status <- character()
-  n_days <- cfg$runin$days
+  n_days <- cfg$runin$end                     # the last study day of the run-in: only days after it are modelled
   unit <- function(kind, id, compute, spec) {
     u <- run_unit(ckpt_dir, list(kind = kind, stream = s, id = id),
                   ckpt_key(cfg, kind, dkey, c(spec, list(schema = RUNIN_SCHEMA)), cfg$model$sample_persons), compute, cfg)

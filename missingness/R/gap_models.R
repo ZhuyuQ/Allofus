@@ -69,8 +69,8 @@ collapse_sparse_bins <- function(f, min_n) {
 #   back2_dev       : first FULL day back = r + 1 (= post_k1; primary outcome of B)
 # With "full_period" back1_dev / back2_dev are z-scores against the person's whole-period mean (look-ahead).
 # Gaps without a usual (fewer than baseline_min_n observed days before them) have NA z-scores.
-#   runin_missing, prev_study_day : missing days of the person's run-in (first cfg$runin$days days) and the study day of the last observed day
-#                     before the gap; the run-in analysis keeps the gaps with prev_study_day > cfg$runin$days (runin.R)
+#   runin_missing, prev_study_day : missing days of the person's run-in (study days cfg$runin$start..end) and the study day of the last observed day
+#                     before the gap; the run-in analysis keeps the gaps with prev_study_day > cfg$runin$end (runin.R)
 # Only the columns the models use are kept (no dates, no unused predictors).
 POST_GAP_DAYS <- 0:7
 
@@ -107,7 +107,7 @@ build_gap_level_data <- function(days, act_days, persons, cfg, pred = "act_steps
   # WHICH day before the gap: the last FULL day d - 1 (primary, cfg$gap_models$predictor_day) or the last recorded day d (sensitivity, the `alt_` columns).
   lag_prim <- gap_predictor_lag(cfg); lag_alt <- 1L - lag_prim
   act_s <- restrict_to_stream_days(act_days, days)        # (the activity stream: nothing changes)
-  rt <- runin_person_table(days, cfg$runin$days)          # missing days in the run-in and the study day of the predictor day before each gap (run-in analysis, runin.R)
+  rt <- runin_person_table(days, cfg$runin$start, cfg$runin$end)          # missing days in the run-in and the study day of the predictor day before each gap (run-in analysis, runin.R)
   gaps[rt, on = "person_id", `:=`(runin_missing = i.runin_missing, prev_study_day = as.integer(prev_obs_date - lag_prim - i.first_date) + 1L)]
   rm(rt)
   pre_gap <- standardization == "pre_gap"
@@ -223,18 +223,18 @@ fit_gap_dose_response <- function(gdat, cfg, outcome = "back2_dev", adjusted = F
                                   id = NA_character_, adjust_mvpa = FALSE, runin = NULL, day = NULL, same_rows = FALSE) {
   gdat <- gap_day_view(gdat, cfg, c(outcome, if (adjust_pre) "w_pre_day_steps", if (adjust_mvpa) "w_pre_day_mvpa"), day, same_rows)
   d <- gdat[!is.na(get(outcome)) & !is.na(log2_gap)]
-  if (!is.null(runin)) d <- d[prev_study_day > cfg$runin$days & !is.na(runin_missing)]
+  if (!is.null(runin)) d <- d[prev_study_day > cfg$runin$end & !is.na(runin_missing)]
   if (adjust_pre) d <- d[!is.na(w_pre_day_steps)]
   if (adjusted) d <- d[complete.cases(d[, .(age10, sex2, cohort)])]
   n_no_mvpa <- if (adjust_mvpa) sum(is.na(d$w_pre_day_mvpa)) else 0L
   if (adjust_mvpa) d <- d[!is.na(w_pre_day_mvpa)]
-  if (!is.null(runin) && nrow(d)) add_runin_columns(d, cfg$runin$days, cfg)       # centred at the mean over the people analysed
+  if (!is.null(runin) && nrow(d)) add_runin_columns(d, runin_length(cfg), cfg)       # centred at the mean over the people analysed
   base <- data.table(model = "B", model_id = id, outcome = outcome, adjusted = adjusted, adjust_pre = adjust_pre,
                      adjust_mvpa = adjust_mvpa, n_gaps_no_mvpa = n_no_mvpa, predictor_day = day %||% (cfg$gap_models$predictor_day %||% "last_full_day"), same_rows = isTRUE(same_rows),
                      n_gaps = nrow(d), n_persons = uniqueN(d$person_id),
                      outcome_mean = if (nrow(d)) mean(d[[outcome]]) else NA_real_, outcome_sd = if (nrow(d) > 1L) stats::sd(d[[outcome]]) else NA_real_,    # outcome distribution (z-scores: ~0 and ~1)
                      gaps_per_person_max = if (nrow(d)) max(table(d$person_id)) else NA_integer_)
-  if (!is.null(runin)) base[, `:=`(runin_variant = runin, runin_days = cfg$runin$days)]
+  if (!is.null(runin)) base[, `:=`(runin_variant = runin, runin_days = cfg$runin$end)]
   finish <- function(coef, coef_all = NULL) list(coef = coef, curve = NULL, observed = NULL, coef_all = coef_all,
                                                   gvif = NULL, wald = NULL, info = coef[, .(model_id, status, note)])
   if (nrow(d) < cfg$gap_models$min_gaps) return(finish(empty_B_row(base, "not_estimable", "too few gaps")))
@@ -386,14 +386,14 @@ fit_gap_length_ordinal <- function(gdat, cfg, adjusted = FALSE, id = NA_characte
   } else gdat <- gap_day_view(gdat, cfg, c("w_pre_day_steps", if (adjust_mvpa) "w_pre_day_mvpa"), day, same_rows)
   d <- gdat[!is.na(w_pre_day_steps) & !is.na(length_bin)]
   if (both) d <- d[!is.na(w_dbg_steps)]
-  if (!is.null(runin)) d <- d[prev_study_day > cfg$runin$days & !is.na(runin_missing)]
+  if (!is.null(runin)) d <- d[prev_study_day > cfg$runin$end & !is.na(runin_missing)]
   adj <- if (adjusted) gap_adjusters(d) else character()
   if (adjusted) d <- d[complete.cases(d[, ..adj])]
   n_no_mvpa <- if (adjust_mvpa) sum(is.na(d$w_pre_day_mvpa)) else 0L
   if (adjust_mvpa) d <- d[!is.na(w_pre_day_mvpa)]
   runin_terms <- character()
   if (!is.null(runin) && nrow(d)) {
-    add_runin_columns(d, cfg$runin$days, cfg)
+    add_runin_columns(d, runin_length(cfg), cfg)
     if (data.table::uniqueN(d$cov0) > 1L) {
       d[, w_x_cov0 := w_pre_day_steps * cov0]                                       # the product as a column: it also enters the proportional-odds check
       runin_terms <- switch(runin, reference = character(), main = "cov0", interaction = c("cov0", "w_x_cov0"), stop("unknown run-in variant: ", runin, call. = FALSE))
@@ -409,7 +409,7 @@ fit_gap_length_ordinal <- function(gdat, cfg, adjusted = FALSE, id = NA_characte
                      length_groups = paste(names(counts), collapse = " | "),
                      group_counts = paste(counts, collapse = " | "),
                      predictor_day = if (both) "both" else day %||% (cfg$gap_models$predictor_day %||% "last_full_day"), same_rows = isTRUE(same_rows) || both)
-  if (!is.null(runin)) base[, `:=`(runin_variant = runin, runin_days = cfg$runin$days)]
+  if (!is.null(runin)) base[, `:=`(runin_variant = runin, runin_days = cfg$runin$end)]
   ren <- function(x) sub("^w_x_cov0$", "w_pre_day_steps:cov0", x)                      # the product column is reported under its model name
   finish <- function(coef, pred = NULL, coef_all = NULL, dg = NULL) {
     gv <- if (!is.null(dg)) tag_diagnostics(dg$gvif, model = "C", model_id = id); wd <- if (!is.null(dg)) tag_diagnostics(dg$wald, model = "C", model_id = id)

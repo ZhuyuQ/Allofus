@@ -283,7 +283,7 @@ test_that("run-in analysis: the description alone fits no model; the models stag
   expect_false(file.exists(file.path(out, "figures", "collinearity_gvif_activity.png")))                                           # no combined figure
   expect_true(all(is.na(rm_$model_collinearity[figure == FALSE, figure_id])) && !any(grepl("Run-in", rm_$model_collinearity$analysis)))
   # another run-in length is another result, never mixed with the first
-  cfg2 <- cfg; cfg2$runin$days <- 21L
+  cfg2 <- cfg; cfg2$runin$end <- 35L
   r4 <- NULL; quiet(r4 <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg2, out, stages = "runin_description", model_streams = "activity"))
   expect_true(all(r4$unit_run_status[grepl("runin", stream), status] == "computed"))
 })

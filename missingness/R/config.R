@@ -135,14 +135,15 @@ make_config <- function(overrides = list()) {
     # "full_period" (sensitivity only): the person's usual is the mean over the whole observation period (look-ahead).
     standardization = list(method = "pre_gap", baseline_min_n = 7L),
 
-    # ---- run-in analysis: wear in the FIRST days of follow-up as a predictor of LATER gaps ---------------------------
-    # The first `days` days of each person's follow-up (study days 1..days, counted in the modelled stream) are the run-in.
-    # missing days in the run-in = days - observed days among them. Everything the run-in analysis models starts AFTER the run-in
-    # (rows whose predictor day, the last full day d - 1, has study_day > days; for models B and C, gaps whose last observed day before them is after the run-in), so the
+    # ---- run-in analysis: wear in the EARLY days of follow-up as a predictor of LATER gaps ---------------------------
+    # Study days start..end of each person's follow-up (counted in the modelled stream) are the run-in. Days 1..start-1 are skipped so the
+    # novelty effect of a new device (high wear in the first two weeks) does not enter the measure; they are never modelled either.
+    # missing days in the run-in = (end - start + 1) - observed days among them. Everything the run-in analysis models starts AFTER the run-in
+    # (rows whose predictor day, the last full day d - 1, has study_day > end; for models B and C, gaps whose last observed day before them is after the run-in), so the
     # run-in measure is always earlier than the outcome it is related to. Whole-period coverage is never used (it contains the outcome).
     #   cov0 = log2(1 + missing days in the run-in), centred at its mean over the analysed people (per doubling of 1 + missing days)
     #   categories (shape check): upper bounds of the groups 0 | 1 | 2-3 | >=4 missing days; reference = 0
-    runin = list(days = 28L,
+    runin = list(start = 15L, end = 42L,       # study days of the run-in window (28 days)
                  cat_breaks = c(0L, 1L, 3L),
                  deciles = 5L,                 # bins of the prior-day steps z-score in the descriptive figure of the steps-gap curve by run-in group
                  epv_min = 10),                # events per estimated coefficient below this = "sparse" flag

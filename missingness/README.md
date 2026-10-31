@@ -3,7 +3,7 @@
 Day-level missingness for the four cohorts (Insomnia, Diabetes, Prostate, Healthy): summary
 statistics and cohort comparisons, temporal structure, day-of-week clustering, a
 mixed-effects model of **gap onset ~ activity of the last full day before the gap** (predictors standardized only with data observed before each
-day), gap-level models of activity after a gap and of gap length, the same models on the days after a **run-in** (wear in the first 28 days), sensitivity analyses
+day), gap-level models of activity after a gap and of gap length, the same models on the days after a **run-in** (wear in study days 15-42; days 1-14 are skipped for the novelty effect), sensitivity analyses
 and collinearity diagnostics. (Disease-label prediction and the mixture model are not part of this.)
 
 **Where to read what:** this file = layout, how to run, the analysis workflow and a map of every output (tables and figures) to its analysis;
@@ -31,7 +31,7 @@ R/sensitivity.R           sensitivity analyses of the primary model; one checkpo
 R/gap_models.R            models B and C (use gap length), their full-period variants and the observed post-gap trajectory; independent units per stream
 R/outcome_variables.R     person-level % of days missing against each model variable: tests, adjusted odds ratios, figures
 R/device.R                Fitbit watch version: person table + timeline from the device export, as-of assignment to days, missing / composition statistics
-R/runin.R                run-in analysis: wear in the first 28 days (description), onset / B / C models after the run-in with and without it, tests, shape check
+R/runin.R                run-in analysis: wear in study days 15-42 (description), onset / B / C models after the run-in with and without it, tests, shape check
 R/plots.R                 ggplot2 figures in the style of the earlier notebooks + figure captions
 R/plots_effects.R         comparison forests (primary vs sensitivity / run-in variant), collinearity, observed post-gap, run-in figures
 R/report.R                tables, captions, results summary, run metadata
@@ -105,7 +105,7 @@ people per cohort after the overlap rule (Cell 5; `cohort_overlap.tsv`) -> the u
 | 4b | **Gap-level model B: activity after a gap** (Cell 15) | `model_B_post_gap_activity`, `model_B_all_terms`, `model_B_curve`, `model_B_observed`, `model_B_observed_trajectory` | `gap_dose_response`, `gapB_forest_<stream>`, `post_gap_activity_observed_<stream>` |
 | 4c | **Gap-level model C: gap length** (Cell 15) | `model_C_gap_length`, `model_C_all_terms`, `model_C_predicted_probs` | `gap_length_probs`, `gapC_forest_<stream>` |
 | 4d | **MVPA before the gap as a covariate of models B and C** (Cell 15; units `B_back2_adj_mvpa`, `B_back2_adj_pre_mvpa`, `C_adj_mvpa`) | `gap_mvpa_effects` (MVPA effect with 95% CI, the main terms with and without MVPA, n, VIF); the MVPA fits are also in `model_B_post_gap_activity`, `model_C_gap_length`, `model_B_all_terms`, `model_C_all_terms` | `gapB_mvpa_effect_<stream>`, `gapC_mvpa_effect_<stream>` |
-| 5 | **Run-in analysis: wear in the first 28 days and gaps later** (Cells 11c description, 18 primary models = without a run-in term / with the run-in and its interaction, 18b sensitivity = other forms; only days / gaps AFTER the run-in; H1 wear trait, H2 steps effect depends on run-in, H3 robustness) | `runin_flow`, `runin_distribution`, `runin_rate`, `runin_steps_by_group`, `runin_association`, `runin_onset_coefficients`, `runin_onset_models`, `runin_gapB` / `runin_gapC` (+ `_all_terms`), `runin_tests`, `runin_shape`, `runin_effect_by_missing`, `runin_primary_effect`, `runin_quality` | `runin_distribution`, `runin_rate_by_category` (H1), `runin_steps_by_group_<stream>` (H2), `runin_primary_effect` (H3), `runin_steps_by_missing_days` (H2 model), `runin_onset_all_terms_other_<stream>`, `runin_gapB_all_terms_<stream>`, `runin_gapC_all_terms_<stream>`, one GVIF figure per model `runin_gvif_<onset|model_B|model_C>_<stream>`; sensitivity (Cell 18b): `runin_sensitivity_primary_effect`, `runin_sensitivity_shape`, `runin_sensitivity_{onset,gapB,gapC}_all_terms_*` |
+| 5 | **Run-in analysis: wear in study days 15-42 and gaps later** (Cells 11c description, 18 primary models = without a run-in term / with the run-in and its interaction, 18b sensitivity = other forms; only days / gaps AFTER the run-in; H1 wear trait, H2 steps effect depends on run-in, H3 robustness) | `runin_flow`, `runin_distribution`, `runin_rate`, `runin_steps_by_group`, `runin_association`, `runin_onset_coefficients`, `runin_onset_models`, `runin_gapB` / `runin_gapC` (+ `_all_terms`), `runin_tests`, `runin_shape`, `runin_effect_by_missing`, `runin_primary_effect`, `runin_quality` | `runin_distribution`, `runin_rate_by_category` (H1), `runin_steps_by_group_<stream>` (H2), `runin_primary_effect` (H3), `runin_steps_by_missing_days` (H2 model), `runin_onset_all_terms_other_<stream>`, `runin_gapB_all_terms_<stream>`, `runin_gapC_all_terms_<stream>`, one GVIF figure per model `runin_gvif_<onset|model_B|model_C>_<stream>`; sensitivity (Cell 18b): `runin_sensitivity_primary_effect`, `runin_sensitivity_shape`, `runin_sensitivity_{onset,gapB,gapC}_all_terms_*` |
 | 6 | **Sensitivity analyses** (incl. the predictor-day check of models B and C: `gap_day_check`, `gapB_day_check_<stream>`, `gapC_day_check_<stream>`) incl. full-period standardization (Cell 16; for models B and C the `*_fullperiod` units of Cell 15) | `sensitivity`, `sensitivity_all_terms`, `sensitivity_collinearity`, `day_check`, `day_descriptive`, `day_pattern` | `forest_sensitivity`, `sensitivity_forest_<stream>`, `sensitivity_all_terms_other_<stream>`, and the predictor-day check (the primary model reads the last full day d - 1; sensitivity: the day right before the gap d): `day_check_<stream>`, `day_pattern_<stream>` |
 | 7 | **Model diagnostics and integrated summary** (written by every model cell) | `model_collinearity` (GVIF of every model of the main analysis), `model_term_tests`, `onset_collinearity`, `gap_collinearity`, `unit_failures`, `checkpoint_status`, `unit_run_status`; `results_summary.md` | `collinearity_gvif_<model>_<stream>` (one figure per model) |
 
@@ -116,7 +116,7 @@ The all-terms figures come in two parts: `..._year_...` = the calendar-year term
 `model_term_tests`). In all comparison figures the first (dark) colour is the primary analysis.
 
 **Settings that change results** (`cfg`, part of every checkpoint key): `standardization` (`method = "pre_gap"`, `baseline_min_n = 7`), `reference_cohort`,
-`runin` (`days` = 28, `cat_breaks`, `deciles`, `epv_min`), the onset / gap-model settings as before. Results saved by an earlier
+`runin` (`start` = 15, `end` = 42, `cat_breaks`, `deciles`, `epv_min`), the onset / gap-model settings as before. Results saved by an earlier
 version of the code (other standardization, other odds-ratio direction, other stored content) are recognised as stale and refitted once.
 
 ## Resources, memory, checkpoints and resuming
@@ -249,7 +249,7 @@ The number of people per overlap combination is written to `L1/cohort_overlap.ts
 * **Risk set** (one row per observed day except the last): outcome = a gap starts the next day.
 * **Prior-day predictors**: `w_` = how many within-person SDs the day was above (+) the person's own usual, `b_` = how many SDs the person's usual is above the average person; the usual is the mean of
   the person's observed days **before** the day (pre-gap standardization). Odds ratios are *per +1 SD higher than the person's usual* (OR = exp(coefficient) for every term).
-* **Run-in**: the first `cfg$runin$days` (28) days of a person's follow-up in a stream; **missing days in the run-in** = 28 - observed days among them; the models use `log2(1 + missing days)`, centred.
+* **Run-in**: study days `cfg$runin$start`..`cfg$runin$end` (15-42) of a person's follow-up in a stream (days 1-14 are skipped: the novelty effect of a new device); **missing days in the run-in** = 28 - observed days among them; only days after day 42 are modelled; the models use `log2(1 + missing days)`, centred.
 
 ## Analyses and their role
 

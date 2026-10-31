@@ -157,7 +157,7 @@ write_results_summary <- function(res, cfg, outdir) {
              fl[, .(max_vif = max(vif_equiv)), by = .(stream, term, flag)][order(stream, -max_vif)][, sprintf("* %s: %s (%s, max %.1f)", stream, term, flag, max_vif)]), "")
   }
   if (!is.null(res$runin_tests) && nrow(res$runin_tests) > 0L) {
-    L <- c(L, sprintf("## Run-in analysis (wear in the first %d days; only gaps AFTER the run-in are modelled)", cfg$runin$days),
+    L <- c(L, sprintf("## Run-in analysis (wear in study %s; only gaps AFTER the run-in are modelled)", runin_window_label(cfg)),
            "Primary analysis (model with the run-in and its interaction). H1: more missing days in the run-in -> later gaps (per doubling of 1 + missing days). H2: the steps effect depends on the run-in (the confirmatory test; Holm over the streams). Other forms of the run-in are in the sensitivity analysis (runin_tests.tsv, analysis = sensitivity).",
            res$runin_tests[analysis == "primary", sprintf("* %s, %s, %s: %.2f (%.2f-%.2f), p = %s, Holm p = %s", model, stream, substr(hypothesis, 1L, 2L), effect, low, high,
                                                           signif(p, 2), signif(p_holm, 2))], "")
