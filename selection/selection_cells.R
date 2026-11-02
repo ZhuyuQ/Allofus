@@ -80,3 +80,13 @@ final_pid <- read_final_pid(file.path(OUT_DIR, "final_pid_base.txt"))
 print(final_pid[, .N, by = cohort])
 exports <- run_bq_exports(cfg, final_pid)       # to <bucket>/bq_exports/<owner>/20261031/
 # The ETL then runs with EXPORT_DATE "20261031", FINAL_PID = final_pid_base.txt and CCI_FILE = cci.txt of OUT_DIR.
+
+# ==== CELL 10   (summary tables and Venn diagram of the selection in OUT_DIR; needs Cells 1-2 and the files of Cells 4-7)
+# tables/table1_demographics_<tag>_{all,excl_overlap}.tsv, tables/table_fitbit_<tag>_{all,excl_overlap}.tsv, tables/venn_counts_<tag>.tsv,
+# figures/venn_<tag>.png / .pdf.   all = every cohort membership (N = rows of final_pid); excl_overlap = people in several cohorts removed.
+source(file.path(ROOT, "final_missing/R/persons.R"))                        # race_group_from_name()
+source(file.path(ROOT, "selection/summary_tables.R"))
+TAG  <- "base"                                                              # or "comp50-60" etc.
+meta <- sel_fetch(st_sql_meta(unique(fread(file.path(OUT_DIR, sprintf("final_pid_%s.txt", TAG)))$person_id)))
+res  <- st_run(OUT_DIR, TAG, meta)
+print(res$all$table1); print(res$all$fitbit); print(res$venn)

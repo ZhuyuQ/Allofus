@@ -1,7 +1,8 @@
 # Run from selection/:   Rscript tests/test_selection.R
 suppressMessages({ library(testthat); library(data.table) })
 root <- normalizePath("..")
-source(file.path(root, "final_missing/R/utils.R"))
+miss <- if (dir.exists(file.path(root, "final_missing"))) "final_missing" else "missingness"   # Workbench / this repo
+source(file.path(root, miss, "R/utils.R"))
 source(file.path(root, "functions/cci_function.R"))
 suppressMessages(source(file.path(root, "functions/ind_descriptive_func.R")))     # filter_pid_func, the earlier rule
 source(file.path(root, "selection/selection_sql.R"))

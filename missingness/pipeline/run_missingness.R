@@ -10,7 +10,7 @@
 #   sensitivity  true sensitivity analyses of the primary model
 # ==============================================================================
 BASE            <- "/home/jupyter/workspace/rw-migration-aou-rw-6f1dba72/workspaces"
-MISSINGNESS_DIR <- file.path(BASE, "temporaldigitalhealthphenotyping/missingness")       # <- where you put the folder
+MISSINGNESS_DIR <- file.path(BASE, "temporaldigitalhealthphenotyping/final_missing")       # <- where you put the folder
 L1_DIR          <- file.path(BASE, "result/final/missingness/L1")
 OUT_DIR         <- file.path(BASE, "result/final/missingness/results")
 

@@ -7,9 +7,9 @@
 # just run it again. Use the SAME EXPORT_DATE in run_etl.R.
 # ==============================================================================
 BASE            <- "/home/jupyter/workspace/rw-migration-aou-rw-6f1dba72/workspaces"
-MISSINGNESS_DIR <- file.path(BASE, "temporaldigitalhealthphenotyping/missingness")       # <- where you put the folder
-FINAL_PID       <- file.path(BASE, "result/final/final_pid.txt")
-EXPORT_DATE     <- "20261006"      # folder name for ALL 16 exports - use the same value in run_etl.R
+MISSINGNESS_DIR <- file.path(BASE, "temporaldigitalhealthphenotyping/final_missing")       # <- where you put the folder
+FINAL_PID       <- file.path(BASE, "result/selection/20261031/final_pid_base.txt")
+EXPORT_DATE     <- "20261031"      # folder name for ALL 16 exports - use the same value in run_etl.R
 
 source(file.path(MISSINGNESS_DIR, "load_missingness.R")); load_missingness(MISSINGNESS_DIR)
 cfg <- make_config(list(export = list(date = EXPORT_DATE)))     # bucket / owner from WORKSPACE_BUCKET / OWNER_EMAIL
@@ -17,7 +17,7 @@ cat("CDR:", cfg$export$cdr, "| billing project:", cfg$export$billing, "\n")   # 
 cat("exporting to:", file.path(cfg$export$bucket, "bq_exports", cfg$export$owner, cfg$export$date), "\n")
 
 final_pid <- read_final_pid(FINAL_PID)
-print(final_pid[, .N, by = cohort])                    # should be 1383 / 1298 / 250 / 6381 (9,312 in total)
+print(final_pid[, .N, by = cohort])                    # should be 1388 / 1306 / 253 / 6381 (9,328 in total)
 exports <- run_bq_exports(cfg, final_pid)
 
 # If an export fails with "exceeds 1 GB / use a wildcard" for sleep or hr, make that stream

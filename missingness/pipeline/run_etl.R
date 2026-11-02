@@ -8,11 +8,11 @@
 # Re-run only when the raw export changes. All later analyses read L1_DIR.
 # ==============================================================================
 BASE            <- "/home/jupyter/workspace/rw-migration-aou-rw-6f1dba72/workspaces"
-MISSINGNESS_DIR <- file.path(BASE, "temporaldigitalhealthphenotyping/missingness")       # <- where you put the folder
+MISSINGNESS_DIR <- file.path(BASE, "temporaldigitalhealthphenotyping/final_missing")       # <- where you put the folder
 L1_DIR          <- file.path(BASE, "result/final/missingness/L1")
-FINAL_PID       <- file.path(BASE, "result/final/final_pid.txt")
-CCI_FILE        <- file.path(BASE, "result/pre_final/pre_final_cci.txt")
-EXPORT_DATE     <- "20261006"      # folder date used by run_exports.R (the date the 16 exports were written)
+FINAL_PID       <- file.path(BASE, "result/selection/20261031/final_pid_base.txt")
+CCI_FILE        <- file.path(BASE, "result/selection/20261031/cci.txt")
+EXPORT_DATE     <- "20261031"      # folder date used by run_exports.R (the date the 16 exports were written)
 
 source(file.path(MISSINGNESS_DIR, "load_missingness.R")); load_missingness(MISSINGNESS_DIR)
 # People who belong to more than one cohort: "exclude" (default) leaves them out, "priority" keeps them in the

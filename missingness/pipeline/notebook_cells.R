@@ -20,20 +20,20 @@
 # ==============================================================================
 # ==== CELL 1
 BASE <- "/home/jupyter/workspace/rw-migration-aou-rw-6f1dba72/workspaces"
-unzip(file.path(BASE, "temporaldigitalhealthphenotyping/missingness.zip"),
+unzip(file.path(BASE, "temporaldigitalhealthphenotyping/final_missing.zip"),
       exdir = file.path(BASE, "temporaldigitalhealthphenotyping"))
-print(list.files(file.path(BASE, "temporaldigitalhealthphenotyping/missingness")))
+print(list.files(file.path(BASE, "temporaldigitalhealthphenotyping/final_missing")))
 
 # ==== CELL 2
 BASE <- "/home/jupyter/workspace/rw-migration-aou-rw-6f1dba72/workspaces"
-MISS <- file.path(BASE, "temporaldigitalhealthphenotyping/missingness")
+MISS <- file.path(BASE, "temporaldigitalhealthphenotyping/final_missing")
 source(file.path(MISS, "load_missingness.R")); load_missingness(MISS)
 
-EXPORT_DATE <- "20261006"
-FINAL_PID   <- file.path(BASE, "result/final/final_pid.txt")
-CCI_FILE    <- file.path(BASE, "result/pre_final/pre_final_cci.txt")
-L1_DIR      <- file.path(BASE, "result/final/missingness/L1")
-OUT_DIR     <- file.path(BASE, "result/final/missingness/results")
+EXPORT_DATE <- "20261031"      # the 16 exports of the full-pool selection (selection/selection_cells.R, Cell 9)
+FINAL_PID   <- file.path(BASE, "result/selection/20261031/final_pid_base.txt")
+CCI_FILE    <- file.path(BASE, "result/selection/20261031/cci.txt")      # CCI with age at the first record
+L1_DIR      <- file.path(BASE, "result/final_missing/L1")
+OUT_DIR     <- file.path(BASE, "result/final_missing/results")
 OVERLAP_POLICY <- "exclude"
 
 cfg <- make_config(list(export  = list(date = EXPORT_DATE),
