@@ -6,6 +6,12 @@ mixed-effects model of **gap onset ~ activity of the last full day before the ga
 day), gap-level models of activity after a gap and of gap length, the same models on the days after a **run-in** (wear in study days 15-42; days 1-14 are skipped for the novelty effect), sensitivity analyses
 and collinearity diagnostics. (Disease-label prediction and the mixture model are not part of this.)
 
+**Input.** The people come from the full-pool selection in `../selection/` (see its `README.md`): CDR C2024Q3R9, >= 21 record days, longest gap <= 14 days and
+compliance >= 70% (first to last record) in **each** of the three streams, CCI <= 10, with the age and the CCI taken at the person's **first record over the three
+streams**. The list is `result/selection/20261031/final_pid_base.txt` (1,388 Insomnia, 1,306 Diabetes, 253 Prostate, 6,381 Healthy = 9,328 memberships) and the CCI
+file `cci.txt` next to it; the 16 BigQuery exports of these people are in the bucket folder `20261031`. Nothing of the earlier exports or L1 tables is reused. On the
+Workbench this folder is named `final_missing` (zip `final_missing.zip`); in the repository it is `missingness/`.
+
 **Where to read what:** this file = layout, how to run, the analysis workflow and a map of every output (tables and figures) to its analysis;
 `STATISTICS.md` = the statistical methods (definitions, standardization and its reference distributions, models, effect sizes, tests,
 collinearity, run-in analysis, validation); `MODEL_EQUATIONS.md` = the exact formulas, predictors, outcomes and contrasts per stream.
@@ -31,6 +37,7 @@ R/sensitivity.R           sensitivity analyses of the primary model; one checkpo
 R/gap_models.R            models B and C (use gap length), their full-period variants and the observed post-gap trajectory; independent units per stream
 R/outcome_variables.R     person-level % of days missing against each model variable: tests, adjusted odds ratios, figures
 R/device.R                Fitbit watch version: person table + timeline from the device export, as-of assignment to days, missing / composition statistics
+R/wear.R                 wear time of the last day before a gap (heart-rate minutes recorded): description by stream and cohort, rows kept by the wear sensitivity analyses
 R/runin.R                run-in analysis: wear in study days 15-42 (description), onset / B / C models after the run-in with and without it, tests, shape check
 R/plots.R                 ggplot2 figures in the style of the earlier notebooks + figure captions
 R/plots_effects.R         comparison forests (primary vs sensitivity / run-in variant), collinearity, observed post-gap, run-in figures
@@ -55,8 +62,9 @@ source("missingness/pipeline/run_etl.R")
 # 2. the analysis (reads only the compact tables)
 source("missingness/pipeline/run_missingness.R")
 ```
-In the notebook use `pipeline/notebook_cells.R` (Cells 1-19). Inputs besides BigQuery: `final_pid.txt`
-(person -> cohort) and `pre_final_cci.txt`. Use the same export date in `run_exports.R` and `run_etl.R`.
+In the notebook use `pipeline/notebook_cells.R` (Cells 1-19). Inputs besides BigQuery: `final_pid_base.txt` (person -> cohort) and `cci.txt`, both written by the
+selection (`result/selection/20261031/`). Use the same export date (`20261031`) in `run_exports.R`, `run_etl.R` and the notebook. The notebook writes `L1` and the results to
+`result/final_missing/{L1,results}`; `run_etl.R` and `run_missingness.R` still default to `result/final/missingness/...`: set the same folders in all of them.
 Finished exports are skipped, so a failed run can simply be repeated.
 No real data are needed to check the code: `Rscript pipeline/run_demo.R <dir>` runs everything on
 simulated data whose true effect is known (OR 0.61 per +1 SD higher steps than usual).
@@ -101,12 +109,13 @@ people per cohort after the overlap rule (Cell 5; `cohort_overlap.tsv`) -> the u
 | 1 | **Descriptive: person-level % of days missing against every model variable** (Cell 11e) | `outcome_variable_tests`, `outcome_variable_by_cohort`, `outcome_variable_contrasts`, `outcome_variable_models`, `outcome_variable_summary`, `outcome_variable_cells` | `outcome_by_variable_<variable>` (one per variable: cohort, sex, watch, age_first, act_steps, ..., streams side by side) |
 | 3 | **Data quality: watch version** (Cells 6c, 8b, 11d; person level, no model) | `device_missing_by_cohort`, `device_tests`, `device_missing_vs_reference`, `device_missing_model`, `device_composition_by_cohort`, `device_composition_residuals`, `device_version_by_cohort`, `device_version_tests`, `device_switching_by_cohort` | `device_version_missing_and_composition`, `device_version_within_cohort` |
 | 3 | **Data quality: device version** (Cells 6c, 8b, 11d) | see the device row below | `device_version_missing_and_composition`, `device_version_within_cohort` |
+| 3 | **Data quality: wear time of the last day before a gap** (Cell 11f; heart-rate minutes recorded on day d, all streams, no model) | `wear_last_day_distribution`, `wear_last_day` (median / quartiles, share under 16 h and 20 h with a person-clustered 95% interval, days with no heart-rate record), `wear_last_day_contrast` (last day minus ordinary days, cluster-robust test, Holm over cohorts) | `wear_last_day` (ECDF, streams in panels, cohorts in colour, solid = last day, dashed = ordinary days) |
 | 4a | **Primary model: gap onset** (primary, model A inside it, model D, exploratory grid; Cells 12-14, 17) | `onset_coefficients` (every term), `onset_models`, `primary_test`, `onset_term_tests`, `vif`, `cohort_interaction`, `cohort_specific`, `risk_unadjusted`, `onset_deciles`, `onset_pre_gap_trajectory` | `onset_primary_forest`, `onset_forest_year_<stream>` + `onset_forest_other_<stream>` (all terms), `onset_deciles_<stream>`, `pre_gap_activity_observed_<stream>` (observed steps on the days before a gap, by gap length; only days followed by a gap), `risk_curve`, `cohort_forest`, `forest_gap_definition`, `gap_definition_all_terms_other_<stream>` + `_year_`, `exploratory_grid_effects_<stream>` |
 | 4b | **Gap-level model B: activity after a gap** (Cell 15) | `model_B_post_gap_activity`, `model_B_all_terms`, `model_B_curve`, `model_B_observed`, `model_B_observed_trajectory` | `gap_dose_response`, `gapB_forest_<stream>`, `post_gap_activity_observed_<stream>` |
 | 4c | **Gap-level model C: gap length** (Cell 15) | `model_C_gap_length`, `model_C_all_terms`, `model_C_predicted_probs` | `gap_length_probs`, `gapC_forest_<stream>` |
 | 4d | **MVPA before the gap as a covariate of models B and C** (Cell 15; units `B_back2_adj_mvpa`, `B_back2_adj_pre_mvpa`, `C_adj_mvpa`) | `gap_mvpa_effects` (MVPA effect with 95% CI, the main terms with and without MVPA, n, VIF); the MVPA fits are also in `model_B_post_gap_activity`, `model_C_gap_length`, `model_B_all_terms`, `model_C_all_terms` | `gapB_mvpa_effect_<stream>`, `gapC_mvpa_effect_<stream>` |
 | 5 | **Run-in analysis: wear in study days 15-42 and gaps later** (Cells 11c description, 18 primary models = without a run-in term / with the run-in and its interaction, 18b sensitivity = other forms; only days / gaps AFTER the run-in; H1 wear trait, H2 steps effect depends on run-in, H3 robustness) | `runin_flow`, `runin_distribution`, `runin_rate`, `runin_steps_by_group`, `runin_association`, `runin_onset_coefficients`, `runin_onset_models`, `runin_gapB` / `runin_gapC` (+ `_all_terms`), `runin_tests`, `runin_shape`, `runin_effect_by_missing`, `runin_primary_effect`, `runin_quality` | `runin_distribution`, `runin_rate_by_category` (H1), `runin_steps_by_group_<stream>` (H2), `runin_primary_effect` (H3), `runin_steps_by_missing_days` (H2 model), `runin_onset_all_terms_other_<stream>`, `runin_gapB_all_terms_<stream>`, `runin_gapC_all_terms_<stream>`, one GVIF figure per model `runin_gvif_<onset|model_B|model_C>_<stream>`; sensitivity (Cell 18b): `runin_sensitivity_primary_effect`, `runin_sensitivity_shape`, `runin_sensitivity_{onset,gapB,gapC}_all_terms_*` |
-| 6 | **Sensitivity analyses** (incl. the predictor-day check of models B and C: `gap_day_check`, `gapB_day_check_<stream>`, `gapC_day_check_<stream>`) incl. full-period standardization (Cell 16; for models B and C the `*_fullperiod` units of Cell 15) | `sensitivity`, `sensitivity_all_terms`, `sensitivity_collinearity`, `day_check`, `day_descriptive`, `day_pattern` | `forest_sensitivity`, `sensitivity_forest_<stream>`, `sensitivity_all_terms_other_<stream>`, and the predictor-day check (the primary model reads the last full day d - 1; sensitivity: the day right before the gap d): `day_check_<stream>`, `day_pattern_<stream>` |
+| 6 | **Sensitivity analyses** (incl. the wear analyses `wear_ge16h` / `wear_ge20h`: predictors of day d on the rows whose day d has >= 16 / >= 20 h of heart-rate minutes, table `wear_filter_flow`; and the predictor-day check of models B and C: `gap_day_check`, `gapB_day_check_<stream>`, `gapC_day_check_<stream>`) incl. full-period standardization (Cell 16; for models B and C the `*_fullperiod` units of Cell 15) | `sensitivity`, `sensitivity_all_terms`, `sensitivity_collinearity`, `day_check`, `day_descriptive`, `day_pattern` | `forest_sensitivity`, `sensitivity_forest_<stream>`, `sensitivity_all_terms_other_<stream>`, and the predictor-day check (the primary model reads the last full day d - 1; sensitivity: the day right before the gap d): `day_check_<stream>`, `day_pattern_<stream>` |
 | 7 | **Model diagnostics and integrated summary** (written by every model cell) | `model_collinearity` (GVIF of every model of the main analysis), `model_term_tests`, `onset_collinearity`, `gap_collinearity`, `unit_failures`, `checkpoint_status`, `unit_run_status`; `results_summary.md` | `collinearity_gvif_<model>_<stream>` (one figure per model) |
 
 `figures/figure_index.tsv` lists every figure present with its step, analysis, model and caption; `figures/figure_captions.md` has the captions;
@@ -216,6 +225,11 @@ one at a time in a worker and are each checkpointed, but their total time (hours
 
 ## Known limitations
 
+* **Wear of the last day.** The only wear measure is the heart-rate minutes recorded on the calendar day (a lower bound of the time worn; the activity table has no wear
+  time of its own). A day with no heart-rate record has unknown wear and is excluded from the wear analyses, never counted as short. The wear analyses restrict the rows to
+  full-wear last days, which removes the gaps that begin with a partial day: they estimate the association among gaps that start after a full-wear day, a different question
+  from the primary one, not a correction of it (STATISTICS.md 6.2).
+
 * The primary standardization uses only earlier observed days (>= 7), so the first week of every person is not in the models and `w`, `b` are noisier early in follow-up;
   the full-period standardization (look-ahead) is the sensitivity analysis, and the trailing 14-day baseline a second one. Keep them in view when interpreting the primary result.
 * The run-in measure comes from days BEFORE the modelled days, but it is noisy (28 days) and overlaps with `any_prior_gap` by construction (a gap in the run-in); estimates describe
@@ -233,8 +247,9 @@ one at a time in a worker and are each checkpointed, but their total time (hours
 
 ## People in more than one cohort
 
-`final_pid.txt` has one row per membership, so a person who is in two cohorts (e.g. insomnia and
-diabetes) has two rows. The exports are per cohort and are not affected. `run_etl()` resolves the
+`final_pid_base.txt` has one row per membership, so a person who is in two cohorts (e.g. insomnia and
+diabetes) has two rows (9,328 rows, 8,939 people). The exports are per cohort and are not affected. In the current list 386 people are in more than one
+cohort (Diabetes + Insomnia 296, Diabetes + Prostate 44, Insomnia + Prostate 43, all three 3); 8,553 people remain under the default policy. `run_etl()` resolves the
 overlap once so that every person counts in exactly one cohort (the cohort tests assume
 independent groups): `cfg$overlap$policy` is `"exclude"` (default; overlapping people are left
 out), `"priority"` (kept in the first of their cohorts in `cfg$overlap$priority`) or `"error"`.
@@ -260,7 +275,7 @@ The number of people per overlap combination is written to `L1/cohort_overlap.ts
 | B | Is activity on the first full day back lower after longer gaps? | MNAR *plausibility* |
 | C | Does low prior-day activity predict a longer gap? (ordinal) | exploratory; only if proportional odds holds |
 | D | Same as primary with gaps >= 2, 3, 7 days | main secondary analysis |
-| Sensitivity | **full-observation-period standardization**, trailing baseline, partial wear, first gap only, main-sleep-only, conditional logit, cluster-robust SEs, spline, random slope | same estimand, other assumptions |
+| Sensitivity | **full-observation-period standardization**, trailing baseline, partial wear, **last day with >= 16 / >= 20 h of heart-rate wear** (predictors of day d), first gap only, main-sleep-only, conditional logit, cluster-robust SEs, spline, random slope | same estimand, other assumptions |
 | Run-in | primary onset model, model B and model C on the days / gaps after the run-in, without and with the run-in terms and their interaction | H1 wear trait -> later gaps; H2 effect modification of steps; H3 robustness |
 | Diagnostics | generalized VIF of every term of every model; joint Wald tests of factor / spline terms | reported, no predictor is removed |
 
@@ -270,7 +285,7 @@ Gap length is **never** a predictor of whether a gap starts (it is only known af
 
 * Gaps preceded by a different activity level than usual show that missingness is **informative** (not completely at
   random). They do not prove MNAR: that depends on the unobserved activity *during* the gap.
-* The data were filtered upstream (>= 70% observed, longest gap <= 14 days, >= 21 days). Gap length
+* The data were filtered upstream (>= 70% observed, longest gap <= 14 days, >= 21 days, in every one of the three streams; CCI <= 10). Gap length
   is therefore limited to 1-14 days, long-gap effects are under-represented, and everything is
   conditional on being a good wearer. `selection_check.tsv` verifies the rule is met.
 * Adjusting for CCI together with age and cohort over-adjusts (CCI contains age points and the

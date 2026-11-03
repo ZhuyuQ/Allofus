@@ -17,6 +17,9 @@
 #   day_before_gap / *_same_rows / both_days
 #                         the PREDICTOR-DAY check (see below): the primary model reads the predictors from the last FULL day d - 1; these read them from the
 #                         day right before the gap (d, which may be a partial day), on all rows / on the rows of the primary model, or both days in one model
+#   wear_ge<h>h           the predictors of day d (the last day with a record before the gap), only on the rows whose day d has >= h hours of heart-rate
+#                         minutes recorded (cfg$wear$hours = 16 and 20; one wear measure for every stream; a day without a heart-rate record is excluded);
+#                         the person's usual is the primary one. Table wear_filter_flow gives the rows and events lost (wear.R)
 #   main_sleep_only       sleep only: a night counts as observed only if main sleep exists
 #   conditional_logit     within-person comparison, no random-effect assumption
 #   cluster_robust_logit  pooled logistic model, person-clustered standard errors
@@ -264,8 +267,9 @@ SENSITIVITY_SCHEMA <- 3L
 #   bundle : lazy(prepare_stream_bundle(..., trailing = TRUE))   alt : lazy bundle of the main-sleep-only
 #   rule (sleep only; NULL otherwise)      prim : the primary row of the onset grid
 #   alt_full : lazy bundle with standardization = "full_period" (NULL: that analysis is not run)
+#   wear_key : fingerprint of the heart-rate day table (the wear measure), part of the key of the wear units
 # Returns the run_unit() status of each analysis.
-run_sensitivity_stage <- function(s, bundle, alt, prim, cfg, ckpt_dir, dkey, term = cfg$primary_term, alt_full = NULL) {
+run_sensitivity_stage <- function(s, bundle, alt, prim, cfg, ckpt_dir, dkey, term = cfg$primary_term, alt_full = NULL, wear_key = NULL) {
   spec_l <- as.list(prim); spec_l$predictors <- list(spec_l$predictors[[1L]])
   tw_term <- sub("^w_", "tw_", term)
   status <- character()
@@ -275,8 +279,8 @@ run_sensitivity_stage <- function(s, bundle, alt, prim, cfg, ckpt_dir, dkey, ter
                   compute, cfg)
     status[id] <<- u$status
   }
-  refit <- function(id, variant, which_term = term, the_bundle = bundle)
-    unit(id, function() extract_term_row(fit_onset_spec(the_bundle$get(), prim, cfg, variant), id, which_term))
+  refit <- function(id, variant, which_term = term, the_bundle = bundle, spec_extra = NULL)
+    unit(id, function() extract_term_row(fit_onset_spec(the_bundle$get(), prim, cfg, variant), id, which_term), spec_extra)
 
   # "main" is the primary onset model itself: it shares that unit's checkpoint (no second fit)
   cfg_p <- cfg; cfg_p$model$sample_persons <- effective_sample(cfg, prim$role)
@@ -311,6 +315,13 @@ run_sensitivity_stage <- function(s, bundle, alt, prim, cfg, ckpt_dir, dkey, ter
     b <- bundle$get()
     isolated(cfg, { x <- day_describe(b, prim, cfg); setattr(x, "kind", "day_description"); x })
   })
+  # wear analyses: the predictors of day d, only on rows whose day d has >= h hours of heart-rate minutes recorded (the threshold and the heart-rate data are part of the key)
+  for (h in cfg$wear$hours)
+    refit(sprintf("wear_ge%gh", h), list(day = "day_before_gap", wear_min = h * 60), term, bundle, list(wear_min = h * 60, max_min = cfg$wear$max_min, hr_data = wear_key))
+  unit("wear_flow", function() {
+    b <- bundle$get()
+    isolated(cfg, { x <- wear_filter_flow(b, prim, cfg); setattr(x, "kind", "wear_flow"); x })
+  }, list(wear_hours = cfg$wear$hours, hr_data = wear_key))
 
   # estimators that reuse the model data: each builds it inside its own worker and frees it again
   with_context <- function(id, body)
@@ -350,16 +361,19 @@ collect_sensitivity_results <- function(ckpt_dir, cfg, data_keys) {
   is_desc <- vapply(cu$values, function(v) identical(attr(v, "kind"), "day_description"), logical(1))     # the predictor-day pattern is not a row of the model table
   desc_vals <- cu$values[is_desc]; desc_st <- cu$units$stream[is_desc]
   cu$values <- cu$values[!is_desc]; cu$units <- cu$units[!is_desc]
+  is_flow <- vapply(cu$values, function(v) identical(attr(v, "kind"), "wear_flow"), logical(1))            # nor is the wear flow table (rows and events by wear of day d)
+  flow <- rbindlist(lapply(cu$values[is_flow], function(v) { attr(v, "kind") <- NULL; v }), fill = TRUE)
+  cu$values <- cu$values[!is_flow]; cu$units <- cu$units[!is_flow]
   tab <- rbindlist(Map(function(v, st) cbind(stream = st, v), cu$values, cu$units$stream), fill = TRUE)
   gv  <- rbindlist(Map(function(v, st) { g <- attr(v, "gvif"); if (is.null(g)) NULL else cbind(stream = st, g) }, cu$values, cu$units$stream), fill = TRUE)
   fd_info <- rbindlist(Map(function(v, st) { g <- attr(v, "day_info"); if (is.null(g)) NULL else cbind(stream = st, g) }, cu$values, cu$units$stream), fill = TRUE)
   fd_pat  <- rbindlist(lapply(desc_vals, `[[`, "pattern"), fill = TRUE); fd_des <- rbindlist(lapply(desc_vals, `[[`, "descriptive"), fill = TRUE)
-  if (nrow(tab) == 0L) return(list(sensitivity = tab, sensitivity_all_terms = tab, sensitivity_collinearity = gv, sensitivity_failures = cu$failures))
+  if (nrow(tab) == 0L) return(list(sensitivity = tab, sensitivity_all_terms = tab, sensitivity_collinearity = gv, sensitivity_failures = cu$failures, wear_filter_flow = flow))
   # `sensitivity`: the tested term of every analysis (as before); `sensitivity_all_terms`: all within-person terms
   list(sensitivity = tab[tested %in% TRUE][, tested := NULL][],
        sensitivity_all_terms = tab[!analysis %in% c("spline_vs_linear", "random_slope")][, tested := NULL][],   # estimates only (the other two are tests)
        sensitivity_collinearity = gv, sensitivity_failures = cu$failures,
-       day_check = day_check_table(tab, fd_info, fd_des, cfg), day_pattern = fd_pat, day_descriptive = fd_des)
+       day_check = day_check_table(tab, fd_info, fd_des, cfg), day_pattern = fd_pat, day_descriptive = fd_des, wear_filter_flow = flow)
 }
 
 # ---- engine check -----------------------------------------------------------------------------------

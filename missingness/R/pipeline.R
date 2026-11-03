@@ -100,9 +100,11 @@ model_columns <- function(cfg, stream) {
 
 # The day tables a model stage of `stream` works on: the stream itself and (for sleep / hr) the
 # activity table, each restricted to the needed columns.
-stream_inputs <- function(store, stream, cfg, extra_cols = character()) {
+# wear = TRUE adds the heart-rate minutes recorded per day (`wear`: person_id, date, wear_min) for the wear analyses; the hr stream carries them in its own table.
+stream_inputs <- function(store, stream, cfg, extra_cols = character(), wear = FALSE) {
   out <- setNames(list(store$get(stream, unique(c(model_columns(cfg, stream), extra_cols)))), stream)
   if (stream != "activity") out$activity <- store$get("activity", model_columns(cfg, "activity"))
+  if (wear && stream != "hr") out$wear <- store$get("hr", "total_hr_min")[, .(person_id, date, wear_min = total_hr_min)]
   out
 }
 
@@ -111,6 +113,9 @@ stream_inputs <- function(store, stream, cfg, extra_cols = character()) {
 #   "variables"        = person-level % of days missing against every model variable (cohort, sex, watch version, age, between-person
 #                        predictor levels): figures outcome_by_variable_*, tables outcome_variable_*. Needs Cell 8b for the watch version.
 #   "device"           = missing share and composition of the Fitbit device version by cohort (needs Cells 6c and 8b); no model.
+#   "wear"             = wear time of the last recorded day before a gap (heart-rate minutes recorded, all streams): distribution by stream and cohort against
+#                        ordinary days, share under each threshold of cfg$wear$hours, and their difference; figure wear_last_day; no model (wear.R). The
+#                        sensitivity analyses wear_ge<h>h belong to stage "sensitivity".
 #   "runin_description" = the run-in (study days cfg$runin$start..end of follow-up): distribution of missing days, the observed gap rate after
 #                        the run-in by run-in group (H1), and the steps-gap curve by run-in group (H2); no model.
 #   "runin"            = that description first, then the primary onset model and models B and C on the days / gaps AFTER the run-in,
@@ -341,17 +346,18 @@ run_missingness_pipeline <- function(day_tables, persons, cfg, outdir,
     prim_specs <- make_onset_grid(cfg)[role == "primary" & stream %in% model_streams]
     for (i in seq_len(nrow(prim_specs))) {
       s <- prim_specs$stream[i]
-      inputs <- lazy(function() stream_inputs(store, s, cfg, extra_cols = if (s == "sleep") "has_main_sleep"))
+      inputs <- lazy(function() stream_inputs(store, s, cfg, extra_cols = if (s == "sleep") "has_main_sleep", wear = TRUE))
       bundle <- lazy(function() prepare_stream_bundle(s, inputs$get(), persons, cfg, trailing = TRUE))   # tw_ columns only needed here
       alt <- if (s == "sleep" && "has_main_sleep" %in% store$columns("sleep"))
         lazy(function() prepare_stream_bundle("sleep", inputs$get(), persons, cfg, observed_filter = "has_main_sleep")) else NULL
       alt_full <- lazy(function() prepare_stream_bundle(s, inputs$get(), persons, cfg, standardization = "full_period"))   # person's usual from the whole period
-      units[[paste0("sensitivity:", s)]] <- run_sensitivity_stage(s, bundle, alt, prim_specs[i], cfg, ckpt, dkeys[[s]], alt_full = alt_full)
+      units[[paste0("sensitivity:", s)]] <- run_sensitivity_stage(s, bundle, alt, prim_specs[i], cfg, ckpt, dkeys[[s]], alt_full = alt_full,
+                                                                  wear_key = store$fingerprint("hr"))     # the wear measure is the heart-rate table
       bundle$release(); alt_full$release(); if (!is.null(alt)) alt$release(); inputs$release()
     }
     res <- c(res, collect_sensitivity_results(ckpt, cfg, dkeys))
     if (nrow(res$sensitivity) > 0L) {
-      ord <- c("main", "day_before_gap", "full_period_standardization", "trailing_baseline", "exclude_partial_wear", "first_gap_only", "main_sleep_only", "conditional_logit", "cluster_robust_logit")
+      ord <- c("main", "day_before_gap", "wear_ge16h", "wear_ge20h", "full_period_standardization", "trailing_baseline", "exclude_partial_wear", "first_gap_only", "main_sleep_only", "conditional_logit", "cluster_robust_logit")
       f_tab <- res$sensitivity[!is.na(or) & !analysis %in% c("day_before_gap_same_rows", "last_full_day_same_rows", "both_days"), .(stream, label = analysis, or, or_low, or_high)][order(match(label, ord))]     # the predictor-day check has its own figures
       if (nrow(f_tab) > 0L) fig("forest_sensitivity", plot_forest(f_tab, "Primary Effect Under Different Assumptions", group_col = "stream", style = cfg$plot$interval_style %||% "se"), 10, 5)
     }
@@ -369,6 +375,21 @@ run_missingness_pipeline <- function(day_tables, persons, cfg, outdir,
         if (!is.null(p)) fig(paste0("sensitivity_all_terms_other_", s), p)
       }
     }
+  }
+
+  # ---- wear time of the last recorded day before a gap: heart-rate minutes recorded on day d, by stream and cohort; no model (wear.R) ----
+  if (has("wear")) {
+    if (!"hr" %in% streams) stop("the wear description needs the heart-rate day table (stream 'hr')", call. = FALSE)
+    hw <- store$get("hr", "total_hr_min")[, .(person_id, date, wear_min = total_hr_min)]
+    parts <- lapply(streams, function(s) {
+      x <- wear_days(store$get(s, cols = character()), hw, persons, s)
+      r <- wear_describe_stream(x, cfg); rm(x); invisible(gc()); r
+    })
+    rm(hw)
+    res$wear_last_day_distribution <- rbindlist(lapply(parts, `[[`, "distribution"))
+    res$wear_last_day              <- rbindlist(lapply(parts, `[[`, "summary"))
+    res$wear_last_day_contrast     <- rbindlist(lapply(parts, `[[`, "contrast"))
+    fig("wear_last_day", plot_wear_last_day(res$wear_last_day_distribution, cfg), 12, 5)
   }
 
   # ---- device version (data quality): missing share and composition by cohort; person level, no model of the gap outcome ----

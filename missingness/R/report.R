@@ -68,6 +68,7 @@ show_figure <- function(outdir, name) {
 figure_analysis <- function(name) {
   rules <- list(
     c("^device_",                              "3", "Data quality: device version",            "device version (descriptive, person level)"),
+    c("^wear_last_day",                        "3", "Data quality: wear time of the last day", "heart-rate minutes recorded on the last day before a gap (descriptive, day level)"),
     c("^outcome_by_variable",                  "1", "Descriptive statistics: outcome by model variable", "descriptive (person level)"),
     c("^runin_",                               "5", "Run-in analysis: wear in the first days and later gaps", "gap onset / model B / model C after the run-in"),
     c("^collinearity_",                        "7", "Model diagnostics",                       "all models (GVIF)"),
@@ -87,8 +88,9 @@ table_analysis <- function(name) {
     c("^runin_",                                               "5", "Run-in analysis: wear in the first days and later gaps"),
     c("collinearity|term_tests|^unit_|^checkpoint_|failures",  "7", "Model diagnostics and run status"),
     c("^device_",                                              "3", "Data quality: device version"),
+    c("^wear_last_day",                                        "3", "Data quality: wear time of the last day"),
     c("^outcome_variable",                                     "1", "Descriptive statistics: outcome by model variable"),
-    c("^sensitivity|^day_check|^day_pattern|^gap_day_check",                               "6", "Sensitivity analyses"),
+    c("^sensitivity|^day_check|^day_pattern|^gap_day_check|^wear_filter",                  "6", "Sensitivity analyses"),
     c("^onset_|^primary_test|^vif$|^cohort_interaction|^cohort_specific|^risk_unadjusted", "4", "Primary models: gap onset"),
     c("^model_B",                                              "4", "Primary models: gap-level activity after a gap (model B)"),
     c("^model_C",                                              "4", "Primary models: gap-level gap length (model C)"),

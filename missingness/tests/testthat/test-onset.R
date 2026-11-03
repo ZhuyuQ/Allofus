@@ -62,7 +62,13 @@ test_that("sensitivity analyses are separate units, agree with the main estimate
   sens <- got$sensitivity
   expect_true(all(c("main", "full_period_standardization", "trailing_baseline", "exclude_partial_wear", "first_gap_only",
                     "cci_removed", "cci_as_groups", "cci_within_cohort",
-                    "conditional_logit", "cluster_robust_logit", "spline_vs_linear", "random_slope") %in% sens$analysis))
+                    "wear_ge16h", "wear_ge20h", "conditional_logit", "cluster_robust_logit", "spline_vs_linear", "random_slope") %in% sens$analysis))
+  # the wear analyses: day d's predictors on the rows whose day d has >= h hours; fewer rows and events than day_before_gap, nested by threshold
+  ev <- function(a) sens[analysis == a, n_events]
+  expect_lt(ev("wear_ge16h"), ev("day_before_gap")); expect_lt(ev("wear_ge20h"), ev("wear_ge16h"))
+  expect_lt(abs(sens[analysis == "wear_ge16h", estimate] - sens[analysis == "day_before_gap", estimate]), 0.35)
+  expect_true(nrow(got$wear_filter_flow) > 0L && all(c("n_rows", "n_events", "mean_w") %in% names(got$wear_filter_flow)))
+  expect_true(all(c("wear_ge16h", "wear_ge20h") %in% got$sensitivity_all_terms$analysis))
   expect_true(nrow(got$sensitivity_collinearity) > 0L && all(c("analysis", "term", "vif_equiv", "flag") %in% names(got$sensitivity_collinearity)))
   est <- sens[analysis %in% c("main", "conditional_logit", "cluster_robust_logit", "trailing_baseline"), estimate]
   expect_true(all(abs(est - sens[analysis == "main", estimate]) < 0.25))

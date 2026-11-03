@@ -164,6 +164,14 @@ make_config <- function(overrides = list()) {
                           hr       = "total_hr_min < 1200")
     ),
 
+    # ---- wear time of the last recorded day (stage "wear" and the sensitivity analyses wear_ge<h>h) ----------------------------------
+    # ONE wear measure for every stream: the heart-rate minutes recorded on the calendar day (`total_hr_min`, the sum of the four zone minutes; at most 1440).
+    # A day with no heart-rate record has no wear (unknown) and is excluded, never counted as short. d = the last day with a record before a gap.
+    # wear_ge<h>h = the primary model with the predictors of day d, only on the rows whose day d has >= h hours; the person's usual stays the primary one
+    # (all earlier days). Not part of the checkpoint key of the other results; each wear unit carries its own threshold in its key.
+    wear = list(hours   = c(16, 20),
+                max_min = 1440),
+
     # ---- mixed-model settings (these change RESULTS; resource settings are in `resources`) --------
     model = list(
       # "lme4" with nAGQ = 0 is ~10x faster than glmmTMB and ~100x faster than nAGQ = 1 here,

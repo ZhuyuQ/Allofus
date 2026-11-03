@@ -231,7 +231,8 @@ test_that("the sensitivity stage writes the all-predictor table and one forest p
   # the predictor-day check: tables and its own figures, not mixed into the generic sensitivity figures
   expect_true(all(file.exists(file.path(out, "tables", c("day_check.tsv", "day_pattern.tsv", "day_descriptive.tsv")))))
   expect_true(all(file.exists(file.path(out, "figures", c("day_check_activity.png", "day_pattern_activity.png")))))
-  expect_true(all(c("day_before_gap", "day_before_gap_same_rows", "both_days") %in% r$sensitivity$analysis))
+  expect_true(all(c("day_before_gap", "day_before_gap_same_rows", "both_days", "wear_ge16h", "wear_ge20h") %in% r$sensitivity$analysis))
+  expect_true(file.exists(file.path(out, "tables", "wear_filter_flow.tsv")))                  # the rows and events of the wear analyses (data wear = the heart-rate table)
   ix <- fread(file.path(out, "figures", "figure_index.tsv")); expect_equal(ix[figure == "day_check_activity.png", step], 6L)
 })
 

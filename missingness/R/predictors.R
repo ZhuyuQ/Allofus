@@ -192,6 +192,9 @@ prepare_stream_bundle <- function(stream, day_tables, persons, cfg, observed_fil
   cov <- person_covariates(persons, cfg)                 # cohort, age10, sex2, CCI and device family (covariates.R)
   add_columns(cov, "person_id")
   add_columns(runin_person_table(days, cfg$runin$start, cfg$runin$end)[, .(person_id, runin_missing)], "person_id")      # missing days in the run-in window (runin.R); only the run-in models use it
+  # heart-rate minutes recorded on the row's day d (wear_min; wear.R): the hr stream's own table, else day_tables$wear (person_id, date, wear_min). NA = no heart-rate record.
+  wear <- day_tables[["wear"]] %||% if (stream == "hr" && "total_hr_min" %in% names(days)) days[, .(person_id, date, wear_min = total_hr_min)]
+  if (!is.null(wear)) add_columns(wear[, .(person_id, date, wear_min)], c("person_id", "date"))
   setkey(rs, person_id, date)
 
   list(stream = stream, gaps = gaps, rs = rs, scales = scales,

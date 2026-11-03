@@ -182,6 +182,16 @@ print(res$outcome_variable_tests[, .(stream, variable, test, n, p_holm = signif(
                                      p_cohorts_differ_holm = signif(p_cohort_difference_holm, 3))])
 for (v_ in unique(res$outcome_variable_tests$variable)) show_figure(OUT_DIR, paste0("outcome_by_variable_", v_))     # shows each saved figure here
 
+# ==== CELL 11f   (data quality: wear time of the last recorded day before a gap; ~1-2 min, no model; run BEFORE Cell 16 to see whether the analyses wear_ge16h / wear_ge20h matter)
+# Wear = heart-rate minutes recorded on the calendar day (the same measure for the activity, sleep and heart-rate streams; a day with no heart-rate record has no wear, is counted and not drawn).
+# Figure wear_last_day: ECDF of the hours on day d, solid = d is the last day with a record before a gap, dashed = ordinary days (a record on d + 1; return days included); streams side by side, cohorts in colour.
+# Tables wear_last_day_distribution (the ECDF), wear_last_day (median / quartiles, share under 16 h and 20 h with a person-clustered 95% interval, days without a heart-rate record),
+# wear_last_day_contrast (last - ordinary: percentage points under each threshold and mean hours, 95% interval, cluster-robust p, Holm over the cohorts).
+res <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, OUT_DIR, stages = "wear")
+print(res$wear_last_day[, .(stream, cohort, group, n_days, n_no_hr_record, median_h = round(median_h, 1), threshold_h, pct_below = round(pct_below, 1), low = round(pct_low, 1), high = round(pct_high, 1))])
+print(res$wear_last_day_contrast[, .(stream, cohort, quantity, last = round(last, 1), ordinary = round(ordinary, 1), difference = round(difference, 2), p = signif(p, 3), p_holm = signif(p_holm, 3))])
+show_figure(OUT_DIR, "wear_last_day")
+
 # NOTE (reference-set rule): in the SLEEP and HEART-RATE streams the activity predictors of the onset models, and the day BEFORE a gap in models B and C, are now standardized against the person's
 #   days observed in that stream (not all activity days); the days AFTER a gap (model B outcome) keep all activity days. The sleep / heart-rate onset, sensitivity, run-in and gap-model results are
 #   therefore refitted once (Cells 13, 14, 15, 16, 18, 18b); the ACTIVITY stream's finished results stay valid.
@@ -233,6 +243,8 @@ if (nrow(res$unit_failures) > 0L) print(res$unit_failures)
 # NEW: the primary onset model (and the whole onset family) now reads the predictors from the last FULL day d - 1 (the calendar day before d, the last day with a record before a
 # gap; the mirror image of the first full day back in model B). The day right before the gap (d, may be a partial day) is a SENSITIVITY analysis: day_before_gap (all rows),
 # last_full_day_same_rows / day_before_gap_same_rows / both_days (identical rows); tables day_check, day_descriptive, day_pattern; figures day_check_<stream>, day_pattern_<stream>.
+# NEW: wear_ge16h / wear_ge20h = the predictors of day d, only on the rows whose day d has >= 16 / >= 20 hours of heart-rate minutes recorded (all streams; a day with no heart-rate record is excluded);
+# the person's usual is the primary one. Table wear_filter_flow (rows, people, events and the mean steps z-score by wear class of d and for the kept rows). Units not yet fitted run; the others are skipped.
 res <- run_missingness_pipeline(inp$day_tables, inp$persons, cfg, OUT_DIR, stages = "sensitivity",
                                 model_streams = c("activity", "sleep", "hr"))
 print(res$sensitivity[, .(stream, analysis, term, or = round(or, 2), p = signif(p, 3), status)])

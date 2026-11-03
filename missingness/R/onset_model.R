@@ -99,6 +99,10 @@ build_onset_formula <- function(preds, adjusted, k, baseline = "whole", drop_col
 #                   "both":          day d, plus the primary term on day d - 1 as `lag1_<term>` in the same model (rows with both days)
 #   same_rows     TRUE -> only the rows that have complete predictors on BOTH days d and d - 1 (the rows of the "both" model): with day = "last_full_day"
 #                 or "day_before_gap" the clean comparison of the two days (same rows and outcomes, only the predictor day differs)
+#   wear_min      M -> only rows whose own day d (the last day with a record before the possible gap) has >= M minutes of heart rate recorded (rs$wear_min, the same
+#                 measure in every stream). A day with no heart-rate record has no wear and is dropped. Use with day = "day_before_gap" (analyses wear_ge<h>h);
+#                 the person's usual is not changed.
+#   keep_wear     TRUE -> the output keeps `wear_min` (the descriptive table wear_filter_flow)
 #   runin_terms   which run-in terms the formula gets: "reference" | "main" | "interaction" | "categorical" | "linear_interaction"
 build_onset_data <- function(bundle, spec, cfg, variant = list()) {
   baseline <- variant$baseline %||% "whole"
@@ -138,6 +142,10 @@ build_onset_data <- function(bundle, spec, cfg, variant = list()) {
     if (day != "last_full_day") keep <- keep & !pw_rows(seq_len(nrow(rs)))
     if (use_lag)                keep <- keep & !pw_rows(lag_idx)
   }
+  want_wear <- !is.null(variant$wear_min) || isTRUE(variant$keep_wear)
+  if (want_wear && !"wear_min" %in% names(rs))
+    stop("the bundle has no wear_min: build it with the heart-rate minutes (day_tables$wear, or the hr stream)", call. = FALSE)
+  if (!is.null(variant$wear_min)) keep <- keep & ((rs$wear_min >= variant$wear_min) %in% TRUE)     # NA (no heart-rate record) is not enough wear
   if (!is.null(variant$runin_days)) {                                     # only days AFTER the run-in: the days the predictors are read from
     sd_pred <- if (day == "last_full_day" || use_lag) rs$study_day[lag_idx] else rs$study_day
     keep <- keep & (sd_pred > variant$runin_days) & !is.na(rs$runin_missing); rm(sd_pred)
@@ -151,7 +159,7 @@ build_onset_data <- function(bundle, spec, cfg, variant = list()) {
   adj_cols <- intersect(adj_cols, names(rs))                               # device / cci columns exist only when cfg$model switches them on
   pred_cols <- c(paste0(pre, preds), paste0("b_", preds))
   out_cols <- unique(c("person_id", ycol, pred_cols,
-                       if (spec$adjusted) adj_cols, if (!is.null(variant$runin_days)) "runin_missing"))
+                       if (spec$adjusted) adj_cols, if (!is.null(variant$runin_days)) "runin_missing", if (want_wear) "wear_min"))
   out <- rs[keep, ..out_cols]
   # the adjusters (weekday, time in study, gap history) stay those of day d, the day before the gap: weekday of d is one-to-one with the weekday of d - 1,
   # and the gap history of d is that of d - 1 (no gap lies between them)

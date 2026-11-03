@@ -33,13 +33,23 @@ random_days <- function(n = 25, seed = 1) {
   }))
 }
 
+# Heart-rate minutes recorded per day with variation (the simulated hr table is almost always ~1405 min), deterministic (no random numbers drawn):
+# about 13% of the days under 16 h and 31% under 20 h; about 3% of the days have no heart-rate record at all.
+sim_wear <- function(day_tables) {
+  w <- day_tables$hr[, .(person_id, date)]
+  u <- ((as.numeric(w$person_id) * 7919 + as.numeric(w$date) * 104729) %% 1000) / 1000
+  w[, wear_min := round(1440 * (1 - 0.5 * u^3))]
+  w[!(as.numeric(date) %% 31 == person_id %% 31)]
+}
+
 # Shared by the onset, collinearity and wear-consistency tests
 small_study <- function(beta, seed = 7) {
   cfg <- cfg_test()
   inp <- simulate_inputs(cfg, n_per_cohort = c(Insomnia = 80, Diabetes = 80, Healthy = 160, Prostate = 40),
                          beta = beta, seed = seed)
+  dt <- c(inp$day_tables, list(wear = sim_wear(inp$day_tables)))        # the wear table is only read by prepare_stream_bundle
   list(cfg = cfg, inp = inp,
-       b = suppressMessages(prepare_stream_bundle("activity", inp$day_tables, inp$persons, cfg, trailing = TRUE)))
+       b = suppressMessages(prepare_stream_bundle("activity", dt, inp$persons, cfg, trailing = TRUE)))
 }
 primary_spec <- function(cfg, which_stream = "activity") {
   g <- make_onset_grid(cfg)

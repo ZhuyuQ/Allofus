@@ -12,10 +12,10 @@ primary models, is the last model cell):
 |---|---|---|---|
 | 1 | descriptive statistics of missingness and of the metric values | 2, 4 | 11, 11b |
 | 2 | temporal structure of missingness | 3 | 11 |
-| 3 | data quality: device version | 10b | 11d |
+| 3 | data quality: device version; wear time of the last day before a gap | 10b, 6.2 | 11d, 11f |
 | 4 | primary models: gap onset (primary, model A, model D), gap-level models B and C, exploratory specifications | 5, 7 | 12-15, 17 |
 | 5 | run-in analysis: wear in study days 15-42 and gaps later (onset, B, C; H1-H3) | 10 | 11c, 18 |
-| 6 | sensitivity analyses (incl. full-observation-period standardization) | 6 | 16 |
+| 6 | sensitivity analyses (incl. full-observation-period standardization and the wear analyses) | 6, 6.2 | 16 |
 | 7 | model diagnostics (multicollinearity, joint term tests, convergence) and integrated interpretation | 11, 9 | printed by 12-18 |
 
 Every figure and table belongs to one of these steps; `figures/figure_index.tsv` lists each figure with its step and model, and
@@ -50,18 +50,21 @@ in the models; the number of rows lost this way is the difference between the ri
 * **Gap**: a run of >= 1 consecutive calendar days with no row, lying strictly between two observed days.
   **Gap length** = number of missing days in the run. Gaps are found from the sorted observed dates; no
   calendar grid is built.
-* **Selection already applied upstream** (not re-applied; only *checked* and reported in `selection_check`):
-  >= 70% of window days observed, longest gap <= 14 days, >= 21 days. Consequences: gap lengths lie in 1-14 days,
+* **Selection already applied upstream** (by the full-pool selection of `../selection/`, CDR C2024Q3R9; not re-applied here, only *checked* and reported in `selection_check`):
+  in **each** of the three streams >= 21 observed days, longest interior gap <= 14 days and >= 70% of the days between the first and last record observed
+  (compared exactly, `100 n >= 70 F`), and a Charlson score <= 10. A person who fails in any stream is not selected. Consequences: gap lengths lie in 1-14 days,
   long-gap behaviour is under-represented, and all results are conditional on being a good wearer.
 * **Cohort overlap**: a person in more than one cohort is, by default (`cfg$overlap$policy = "exclude"`), left
   out so that every person counts once (the cohort tests assume independent groups). `"priority"` keeps the person
-  in the first cohort of Prostate > Diabetes > Insomnia > Healthy. Your Cell 8 reported 383 of 8,926 people in
-  more than one cohort.
-* **Covariates**: age in whole years **at the person's first record** (not at the run date), scaled as
+  in the first cohort of Prostate > Diabetes > Insomnia > Healthy. The current list (`final_pid_base.txt`, 9,328 memberships, 8,939 people) has 386 people in more than
+  one cohort (Diabetes + Insomnia 296, Diabetes + Prostate 44, Insomnia + Prostate 43, all three 3); 8,553 remain under `"exclude"`.
+* **Covariates**: age in whole years **at the person's first record over the three streams** (the earliest first date of the activity, sleep and heart-rate day tables; not
+  the age at the date of the analysis, which would depend on when the code is run), scaled as
   `age10 = age / 10` (per 10 years, not centred); sex at birth (Female / Male / Other); race grouped from the race name; Charlson
   Comorbidity Index (CCI) groups 0, 1-2, 3-4, >=5; age groups <=44 (labelled "18-44"), 45-64, >=65.
-  CCI is used only as a **stratifier** in descriptive plots, never as an adjuster (it contains age points and the
-  index disease).
+  The CCI score is computed upstream by `cci_calc_func()` with **this same age** (conditions from `condition_occurrence`, age points added), so the age in the score and the age
+  in the models agree; the selection keeps CCI <= 10. CCI groups are a stratifier in the descriptive plots; the score is a covariate of the adjusted models (section 5.3) and its
+  strong tie to cohort (the score counts diabetes and cancer) is handled by the three `cci_*` sensitivity analyses.
 
 ## 2. Person-level missingness: summaries, tests, effect sizes [`gaps.R`, `summarise.R`]
 
@@ -325,6 +328,7 @@ sensitivity analysis (the spline and random-slope analyses are tests and are not
 | `first_gap_only` | only days up to and including each person's first gap onset (at most one event per person; no gap history) |
 | `main_sleep_only` | sleep only: a night counts as observed only if a main sleep exists (naps alone do not count) |
 | `day_before_gap`, `last_full_day_same_rows`, `day_before_gap_same_rows`, `both_days` | the **predictor-day check**: the predictors of the day right before the gap (d) instead of the last full day (d - 1), see 6.1 |
+| `wear_ge16h`, `wear_ge20h` | the predictors of day d (as `day_before_gap`), only on the rows whose day d has >= 16 / >= 20 hours of heart-rate minutes recorded; the person's usual is unchanged. Section 6.2 |
 | `conditional_logit` | `survival::clogit` with `strata(person_id)`, Efron approximation, persons with >= 1 event only; time-invariant terms (cohort, age, sex, `b_`) cancel. No random-effect assumption. (Before this revision the formula was written `survival::strata(person_id)`, which survival does not recognise as the stratification special: the person ids then entered as dummy covariates. This was corrected; earlier conditional-logit numbers should not be compared.) |
 | `cluster_robust_logit` | pooled logistic regression without random effect, person-clustered sandwich standard errors (`sandwich::vcovCL`) |
 | `spline_vs_linear` | LRT replacing the linear `w` term by a natural spline with 3 df (2 extra df); small p: non-linear. Reported in `p` and the note (`chisq`, `df`), no OR |
@@ -372,6 +376,46 @@ the primary models. The day right before the gap (`d`) is the sensitivity analys
 model; Wald test of `b_(d-1) - b_d`, variance `v + v' - 2 cov`, Holm over the streams). The single-day B and C fits are separate fits and have no covariance, so there is no test of their difference; the joint
 model of C is the test. Table `gap_day_check`, figures `gapB_day_check_<stream>`, `gapC_day_check_<stream>`. The run-in analysis uses the study day of the predictor day (`d - 1`).
 
+
+### 6.2 Wear time of the last day: description and the analyses `wear_ge16h`, `wear_ge20h` [`wear.R`, `onset_model.R`]
+
+**Question.** Section 6.1 asks whether the association is carried by a partial last day by moving the predictor day. This section looks at the wear of day `d` itself:
+how long was the watch worn on the last day before a gap, and what does the association look like when only days with a long wear are used?
+
+**Wear measure (one for every stream).** `wear_min(d)` = the heart-rate minutes recorded on the calendar day (`total_hr_min`, the sum of the four zone minutes, at most
+1440). The activity table has no wear time of its own (Fitbit counts non-wear as sedentary), so the heart-rate minutes are used for the activity, sleep and heart-rate
+streams alike. They are a lower bound of the time worn (a worn watch can lose the signal). A day with **no heart-rate record has no wear information**: it is excluded and
+counted, never treated as a short day. For the sleep stream the date is the wake-up date and is matched to the same calendar date (an approximation). In the heart-rate
+stream every day with a record has some minutes, so its distribution is truncated at the low end by construction.
+
+**Description (stage `wear`, Cell 11f; no model).** Unit = the risk-set day (every observed day of the stream except the person's last). A day `d` is a **last day** when a
+gap starts on `d + 1`, an **ordinary day** when `d + 1` is observed (the first day back after a gap is among them, on purpose: it keeps the comparison with all other days).
+Per stream, cohort and kind of day: the empirical distribution of `wear_min / 60` (one step per whole minute; `wear_last_day_distribution`, figure `wear_last_day`), the
+median and quartiles, the number of days without a heart-rate record, and the share of days under each threshold (`wear_last_day`) with the ratio-estimator 95% interval in which
+**people are the clusters** (`cluster_mean_ci`; a person with many gaps contributes many last days). The **contrast** last - ordinary (`wear_last_day_contrast`) is the difference
+of the two means, in percentage points of days under the threshold and in mean hours, with the CR1 cluster-robust standard error of `day_contrast` (people as clusters), a normal
+`p` and a Holm adjustment over the cohorts of one stream and quantity. Days over 1440 minutes (if any) are counted (`n_over_max`) and clipped in the distribution. It is descriptive: a
+last-day distribution to the left of the ordinary one means that the day before a gap is more often a short-wear day, which is what a partial-day artifact predicts.
+
+**Analyses (stage `sensitivity`).** `wear_ge<h>h`, `h` in `cfg$wear$hours` = (16, 20) **[convention]**: the primary joint adjusted model for `k = 1` (formula of MODEL_EQUATIONS.md 1), the
+predictors read from day `d` as in `day_before_gap`, and only the rows whose own day `d` has `wear_min(d) >= 60 h` (rows with no heart-rate record on `d` are out). The person's
+usual (the mean of all earlier days with a record, at least 7) and the between-person reference are the primary ones, so the **only** difference from `day_before_gap` is the row
+restriction. The tested term is `w_act_steps` of day `d`; all terms are stored in `sensitivity_all_terms`.
+
+**What the estimate means.** The wear of day `d` lies on the path between earlier behaviour and the gap (a gap begins with the watch being taken off). Restricting to full-wear `d` removes the
+gaps that begin with a partial last day and conditions on a variable that is part of the outcome mechanism. The estimate is therefore the association **among gaps that start after a full-wear
+day**: a different question from the primary one, not a correction of it. It is read next to the primary model, `day_before_gap` and the description above, together with the events lost.
+
+**Rows and events (`wear_filter_flow`).** Per stream: the rows, people, events, event % and the mean of the primary term (`mean_w`) for the primary model's rows, every row with complete
+predictors on `d`, the rows with no heart-rate record, each wear class (< 16 h, 16 to < 20 h, >= 20 h) and the rows kept by each analysis. `mean_w` shows the shift of the within-person
+score on full-wear days: the usual contains partial days, so full-wear days sit slightly above it. A constant shift is absorbed by the intercept; the person-specific part (people with
+more partial days have a lower usual, and also more gaps) is second order and largely absorbed by the between-person terms; a `mean_w` far from the primary model's value should be
+mentioned when the estimate is interpreted.
+
+**Limits.** 16 and 20 h are conventions; a normal charging routine of 1-2 hours a day can make 20 h strict, which the distribution shows. Fewer events widen the intervals, and a
+fit under `cfg$model$min_events` is reported as `not_estimable`. The analyses are not adjusted for multiplicity (sensitivity analyses, section 9). They need the heart-rate day table for
+every stream (`stream_inputs(..., wear = TRUE)`); the checkpoint of each wear unit carries its threshold and the fingerprint of the heart-rate table, so changed data or a changed
+threshold are refitted and the other results stay valid.
 
 ## 7. Gap-length models B and C (exploratory) [`gap_models.R`]
 
@@ -468,6 +512,8 @@ intervals: model B in SD units of the activity on the first full day back (per +
 | cohort difference in the primary effect | per-cohort OR | LRT `chisq`, `df`, `p` | `cohort_specific`, `cohort_interaction` |
 | absolute risk | % risk at -1, 0, +1 SD (+ interval) | - | `risk_unadjusted` |
 | sensitivity | OR per estimator | Wald `p`; LRT `p` for spline / random slope | `sensitivity`, `sensitivity_all_terms` |
+| wear of the last day (description) | share of days under 16 / 20 h with a person-clustered 95% interval; median (IQR) of the hours; last - ordinary difference | cluster-robust (CR1) `p`, Holm over cohorts | `wear_last_day`, `wear_last_day_distribution`, `wear_last_day_contrast` |
+| wear sensitivity analyses | OR per +1 SD of `w_act_steps` of day d on rows with >= 16 / >= 20 h of wear on d | Wald `p`; rows and events lost in `wear_filter_flow` | `sensitivity` / `sensitivity_all_terms` (`analysis = wear_ge16h`, `wear_ge20h`), `wear_filter_flow` |
 | model B | change per doubling of gap length (SD units) | normal-approximation `p` | `model_B_post_gap_activity` (+ `model_B_curve`, `model_B_observed`, `model_B_all_terms` = every fixed effect) |
 | model C | OR of a longer gap per +1 SD higher than usual; predicted probabilities | Wald `p`; proportional-odds LRT `po_p` | `model_C_gap_length`, `model_C_predicted_probs`, `model_C_all_terms` = every coefficient |
 | MVPA before the gap (models B, C) | B: SD change per +1 SD MVPA; C: OR of a longer gap per +1 SD MVPA (with and without MVPA in the model) | Wald `p`, `vif_equiv` | `gap_mvpa_effects` |
@@ -489,7 +535,7 @@ intervals: model B in SD units of the activity on the first full day back (per +
 * **Informative missingness is not MNAR proof**: a different activity level before gaps (higher or lower than usual) shows that missingness is **not completely at random**
   (it depends on observed prior values); MNAR concerns the *unobserved* activity during the gap, which the data cannot show.
   Models B and C probe plausibility only. All associations are non-causal.
-* **Selection**: the upstream filter limits gap length to <= 14 days and keeps good wearers; estimates are not generalisable to people with long
+* **Selection**: the upstream filter (all three streams: >= 21 days, longest gap <= 14 days, compliance >= 70%; CCI <= 10) limits gap length to <= 14 days and keeps good wearers; estimates are not generalisable to people with long
   gaps or drop-out. Prostate is all male and almost entirely older; adjusting for sex within it is impossible (the term is dropped).
 * **Heart-rate "coverage"** (`hr_cover`) is a wear measure; its association with gaps is a wear-pattern signal, not physiology.
 * **Reading an odds ratio**: with a rare outcome (a gap starts on a small share of days) the odds ratio approximates a rate ratio, but it is
@@ -661,10 +707,13 @@ a gap running past the run-in counts only its run-in days), the centring and cat
 stored pieces reproduce the interaction coefficients and the effect at a given number of missing days, that a planted shared wear trait is found by the run-in term (and is
 absent when nothing is planted), resumable run-in units whose checkpoints depend on the run-in definition, and that every new figure builds with the intended layers, labels and sizes.
 
+The wear code (`tests/testthat/test-wear.R`): the last-day flag and the heart-rate join of `wear_days`; the shares, the contrast and the empirical distribution against hand computation; that `wear_min` keeps exactly the
+rows whose own day has enough minutes (day `d` predictors, usual unchanged, no heart-rate record excluded); that `wear_filter_flow` adds up; the units `wear_ge16h` / `wear_ge20h` and their resumption. All on simulated data.
+
 Regression check: the `full_period` standardization reproduces the previous version of `predictor_table()` exactly (all `w_`, `b_`, `tw_` columns and the scaling constants identical, maximum absolute difference 0 on simulated data).
 
 Simulation check of the primary estimate (24 replicates of a simulated study of 300 people with a **known** effect, log-odds -0.5 per +1 within-person SD of log steps; script
-`pipeline/validate_simulation.R`): see section 13.1. **Not validated**: any behaviour on the real data (distribution of the run-in, real collinearity, real
+`pipeline/validate_simulation.R`): see section 13.1. **Not validated**: any behaviour on the real data (including the real distribution of the heart-rate minutes of the last day) (distribution of the run-in, real collinearity, real
 effect of the baseline definition); the run-in models at full size (time and memory were measured for the primary models only, see README); the run-in window of days 15-42
 (a design choice, change `cfg$runin$start` / `end` to check it); the sensitivity of the conclusions to the 7-day minimum baseline.
 

@@ -10,6 +10,11 @@ A person is `i`, an observed day of that person in the stream is `d`.
 counts, except in the `main_sleep_only` sensitivity where only `has_main_sleep` counts; heart-rate table: the four zone
 rows collapsed to one row per day). **Gap**: >= 1 consecutive calendar days with no row between two observed days.
 
+**Wear** (`wear.R`; only the wear analyses use it): `wear_min(d)` = heart-rate minutes recorded on the calendar day `d` (`total_hr_min`, 0-1440), the same measure for the activity, sleep and
+heart-rate streams; NA = no heart-rate record on `d` (unknown wear). Threshold analyses: `wear_min(d) >= 60 h` with `h` = 16 and 20 (`cfg$wear$hours`).
+
+**People and covariates come from the full-pool selection** (`../selection/`): age = whole years at the person's earliest record over the three streams; CCI = `cci_calc_func()` with that age.
+
 **Predictors** (day `d` itself, i.e. the day before the possible gap), each transformed and then split into
 `w_` (within-person z-score) and `b_` (between-person z-score):
 
@@ -107,6 +112,7 @@ Each set enters as `w_p + b_p` for every predictor `p` of the set. Example (unad
 | `day_before_gap_same_rows` | `y_ge1` | the same rows and formula, but every `w_` and `b_` read from day d; outcome unchanged: a gap starts on d + 1 |
 | `both_days` | `y_ge1` | the same rows; the primary formula with day d, `+ lag1_w_act_steps` (steps on d - 1); reported: both estimates and the Wald test of `b_d - b_(d-1)`, variance `v_d + v_(d-1) - 2 cov` |
 | `main_sleep_only` (sleep only) | `y_ge1` | primary formula, but a night is "observed" only if it has a main sleep (`has_main_sleep`); gaps and risk set are rebuilt on that definition |
+| `wear_ge16h`, `wear_ge20h` | `y_ge1` | the `day_before_gap` model (every `w_` and `b_` read from day d, rows with complete predictors on d), restricted to the rows with `wear_min(d) >= 960` / `>= 1200` (rows with no heart-rate record on d excluded); the formula, the standardization (the usual = all earlier days, >= 7) and the outcome are the primary ones; term reported: `w_act_steps` (of d); the rows and events kept are in `wear_filter_flow` |
 | `conditional_logit` | `y_ge1` | `survival::clogit`, Efron: `y_ge1 ~ w_act_steps + w_act_sedentary + w_act_mvpa + dow_t + ns(study_day, 3) + prev_gap_len_l + any_prior_gap + days_since_return_l + strata(person_id)` (`strata` written without the `survival::` prefix so that survival recognises it) (sleep/hr: with their own `w_` terms too); only persons with >= 1 event; no `b_`, cohort, age, sex or year terms (they cancel or are time-invariant); `dow_t` kept only if it varies |
 | `cluster_robust_logit` | `y_ge1` | the primary formula without the random intercept (pooled `glm`, binomial), person-clustered sandwich SEs (`vcovCL`) |
 | `spline_vs_linear` | `y_ge1` | primary formula with `w_act_steps` replaced by `ns(w_act_steps, 3)`; likelihood-ratio test against the linear model (2 df) |
