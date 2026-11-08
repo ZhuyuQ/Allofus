@@ -169,8 +169,18 @@ make_config <- function(overrides = list()) {
     # A day with no heart-rate record has no wear (unknown) and is excluded, never counted as short. d = the last day with a record before a gap.
     # wear_ge<h>h = the primary model with the predictors of day d, only on the rows whose day d has >= h hours; the person's usual stays the primary one
     # (all earlier days). Not part of the checkpoint key of the other results; each wear unit carries its own threshold in its key.
-    wear = list(hours   = c(16, 20),
+    wear = list(hours   = c(16, 20, 22),
                 max_min = 1440),
+
+    # ---- weekly rhythm of gap starts and gap ends (stage "weekday_rhythm", weekday_rhythm.R) --------------------------------------------------
+    # dsr_max: days since return are a factor 1, ..., dsr_max, dsr_max + 1 ("22+"). days_so_far_max: gap-end rows with more days so far in the gap are dropped
+    # (the longest gap is 14 days, so 14 days so far always end). holiday_window: days around a US federal holiday dropped in the holiday sensitivity analysis.
+    # n_profile_rows / n_re_draws / n_beta_draws / n_curve_draws / n_person_draws: the seeded rows, random-effect draws and coefficient draws behind the
+    # population-average profiles, the days-since-return curve and the personal rhythm. min_people: cells with 1 to min_people - 1 people are not shown;
+    # min_cell_days: cells with fewer days at risk are drawn grey. sleep_alignment: "night_start" (weekday and holidays of stored date - 1) or "as_stored".
+    # Not part of the keys of the other analyses; every weekday unit carries these settings in its own key.
+    weekday_rhythm = list(dsr_max = 21L, days_so_far_max = 13L, holiday_window = 1L, n_profile_rows = 2000L, n_re_draws = 100L, n_beta_draws = 300L,
+                          n_curve_draws = 100L, n_person_draws = 10000L, min_people = 20L, min_cell_days = 200L, sleep_alignment = "night_start"),
 
     # ---- mixed-model settings (these change RESULTS; resource settings are in `resources`) --------
     model = list(

@@ -113,6 +113,9 @@ stream_inputs <- function(store, stream, cfg, extra_cols = character(), wear = F
 #   "variables"        = person-level % of days missing against every model variable (cohort, sex, watch version, age, between-person
 #                        predictor levels): figures outcome_by_variable_*, tables outcome_variable_*. Needs Cell 8b for the watch version.
 #   "device"           = missing share and composition of the Fitbit device version by cohort (needs Cells 6c and 8b); no model.
+#   "weekday_rhythm"   = weekly rhythm of gap starts and gap ends: shared and personal weekday patterns, calendar routine against charging cycle (days since
+#                        return), cohort differences; tables / figures weekday_rhythm_*, results_summary.md. Give it its OWN outdir (e.g. file.path(OUT_DIR, "weekday")):
+#                        nothing of the other analyses is touched. weekday_rhythm.R, plots_weekday_rhythm.R.
 #   "wear"             = wear time of the last recorded day before a gap (heart-rate minutes recorded, all streams): distribution by stream and cohort against
 #                        ordinary days, share under each threshold of cfg$wear$hours, and their difference; figure wear_last_day; no model (wear.R). The
 #                        sensitivity analyses wear_ge<h>h belong to stage "sensitivity".
@@ -357,7 +360,7 @@ run_missingness_pipeline <- function(day_tables, persons, cfg, outdir,
     }
     res <- c(res, collect_sensitivity_results(ckpt, cfg, dkeys))
     if (nrow(res$sensitivity) > 0L) {
-      ord <- c("main", "day_before_gap", "wear_ge16h", "wear_ge20h", "full_period_standardization", "trailing_baseline", "exclude_partial_wear", "first_gap_only", "main_sleep_only", "conditional_logit", "cluster_robust_logit")
+      ord <- c("main", "day_before_gap", "wear_ge16h", "wear_ge20h", "wear_ge22h", "full_period_standardization", "trailing_baseline", "exclude_partial_wear", "first_gap_only", "main_sleep_only", "conditional_logit", "cluster_robust_logit")
       f_tab <- res$sensitivity[!is.na(or) & !analysis %in% c("day_before_gap_same_rows", "last_full_day_same_rows", "both_days"), .(stream, label = analysis, or, or_low, or_high)][order(match(label, ord))]     # the predictor-day check has its own figures
       if (nrow(f_tab) > 0L) fig("forest_sensitivity", plot_forest(f_tab, "Primary Effect Under Different Assumptions", group_col = "stream", style = cfg$plot$interval_style %||% "se"), 10, 5)
     }
@@ -390,6 +393,22 @@ run_missingness_pipeline <- function(day_tables, persons, cfg, outdir,
     res$wear_last_day              <- rbindlist(lapply(parts, `[[`, "summary"))
     res$wear_last_day_contrast     <- rbindlist(lapply(parts, `[[`, "contrast"))
     fig("wear_last_day", plot_wear_last_day(res$wear_last_day_distribution, cfg), 12, 5)
+  }
+
+  # ---- weekly rhythm of gap starts and gap ends: calendar routine or charging cycle (weekday_rhythm.R; own results folder, see the stage documentation) ----
+  if (has("weekday_rhythm")) {
+    for (s in model_streams) {
+      days <- lazy(function() store$get(s, cols = character()))
+      start_rows <- lazy(function() wr_gap_start_rows(days$get(), persons, s, cfg)); end_rows <- lazy(function() wr_gap_end_rows(days$get(), persons, s, cfg))
+      bundle <- lazy(function() prepare_stream_bundle(s, stream_inputs(store, s, cfg), persons, cfg))
+      units[[paste0("weekday_rhythm:", s)]] <- run_weekday_stage(s, start_rows, end_rows, bundle, make_onset_grid(cfg)[role == "primary" & stream == s], cfg, ckpt, dkeys[[s]])
+      start_rows$release(); end_rows$release(); bundle$release(); days$release(); invisible(gc())
+    }
+    wr <- collect_weekday_results(ckpt, cfg, dkeys)
+    res <- c(res, wr_name_tables(wr))
+    figs_wr <- wr_figures(wr, model_streams, cfg)
+    for (nm in names(figs_wr)) fig(nm, figs_wr[[nm]], 11, 6)
+    if (nz(wr$tests)) write_weekday_summary(wr, cfg, outdir)
   }
 
   # ---- device version (data quality): missing share and composition by cohort; person level, no model of the gap outcome ----
@@ -502,7 +521,7 @@ run_missingness_pipeline <- function(day_tables, persons, cfg, outdir,
   # ---- 8. write everything, and say plainly what ran, what was resumed and what failed ----
   res$unit_run_status  <- unit_status_table(units)
   res$checkpoint_status <- checkpoint_report(ckpt, cfg, dkeys)
-  res$unit_failures <- rbindlist(list(res$onset_failures, res$sensitivity_failures, res$gap_failures, res$runin_failures), fill = TRUE)
+  res$unit_failures <- rbindlist(list(res$onset_failures, res$sensitivity_failures, res$gap_failures, res$runin_failures, res$weekday_rhythm_failures), fill = TRUE)
   if (nrow(res$unit_failures) > 0L && "stream" %in% names(res$unit_failures))      # only the streams of THIS run: an earlier failure of another stream is retried when that stream is run
     res$unit_failures <- res$unit_failures[stream %in% model_streams]
   if (!is.null(res$unit_failures) && nrow(res$unit_failures) > 0L) {

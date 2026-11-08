@@ -18,7 +18,7 @@
 #                         the PREDICTOR-DAY check (see below): the primary model reads the predictors from the last FULL day d - 1; these read them from the
 #                         day right before the gap (d, which may be a partial day), on all rows / on the rows of the primary model, or both days in one model
 #   wear_ge<h>h           the predictors of day d (the last day with a record before the gap), only on the rows whose day d has >= h hours of heart-rate
-#                         minutes recorded (cfg$wear$hours = 16 and 20; one wear measure for every stream; a day without a heart-rate record is excluded);
+#                         minutes recorded (cfg$wear$hours = 16, 20 and 22; one wear measure for every stream; a day without a heart-rate record is excluded);
 #                         the person's usual is the primary one. Table wear_filter_flow gives the rows and events lost (wear.R)
 #   main_sleep_only       sleep only: a night counts as observed only if main sleep exists
 #   conditional_logit     within-person comparison, no random-effect assumption

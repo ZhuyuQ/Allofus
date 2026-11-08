@@ -11,7 +11,7 @@ primary models, is the last model cell):
 | step | analysis | sections | notebook cell |
 |---|---|---|---|
 | 1 | descriptive statistics of missingness and of the metric values | 2, 4 | 11, 11b |
-| 2 | temporal structure of missingness | 3 | 11 |
+| 2 | temporal structure of missingness (incl. the weekly rhythm of gap starts and gap ends) | 3, 3b | 11, 11g |
 | 3 | data quality: device version; wear time of the last day before a gap | 10b, 6.2 | 11d, 11f |
 | 4 | primary models: gap onset (primary, model A, model D), gap-level models B and C, exploratory specifications | 5, 7 | 12-15, 17 |
 | 5 | run-in analysis: wear in study days 15-42 and gaps later (onset, B, C; H1-H3) | 10 | 11c, 18 |
@@ -159,6 +159,97 @@ versus Sunday per cohort with 95% CI. (The mixed-model version in `weekday_tests
 figures, `missing_pct_by_stratum_models` adds quasi-binomial odds ratios (level vs reference, within each cohort, days-weighted) with the omnibus F test of the stratum.
 
 All four "missing by ..." figures (study week, year, weekday, age) use one configuration: a line per cohort with a shaded 95% bootstrap band.
+
+## 3b. Weekly rhythm of gap starts and gap ends [`weekday_rhythm.R`, `plots_weekday_rhythm.R`]
+
+**Question.** Does the watch come off (gap start) or go back on (gap end, return) on particular weekdays? Is that a shared calendar routine or a charging cycle? Does it differ between
+people and between cohorts? The analysis has its own rows, models, tables and figures, in its own results folder (`<results>/weekday/`); nothing of the analyses above or below changes.
+
+**How it differs from what exists.** Section 3 item 3 compares the pooled share of missing days by weekday (odds ratios against Sunday, binomial mixed model of counts). The onset model
+(section 5) adjusts for `dow_t`, the weekday of day `d + 1` against Monday, together with behaviour predictors. Neither separates the **start** of a gap from its **end**, neither asks whether the weekly
+pattern survives after the days since the watch came back on are accounted for, and neither lets people have their own weekly rhythm. Those analyses stay as they are.
+
+**Terms** (used in code comments, tables and captions).
+
+| term | definition |
+|---|---|
+| observed day | a day with a row in that stream's day table (sleep: a main sleep or a nap) |
+| gap | one or more consecutive calendar days with no row, between two observed days; gap length = the number of missing days (1-14 here, because of the upstream selection) |
+| gap start | the first missing day of a gap: a gap starts on day `d + 1` when `d` is observed and `d + 1` is missing |
+| gap end (return) | the first observed day after a gap |
+| days so far in the gap | for a day `t` inside or at the end of a gap that started on `s`: `t - s` |
+| days since return | for an observed day `d`: `d - r + 1`, with `r` the last return (the return day counts as 1); before a person's first gap `d - first record + 1`. Levels `1, ..., 21, 22+` |
+| weekday | Monday (0) to Sunday (6) |
+| weekly rhythm | a 7-day repeating pattern in the chance of a gap start or gap end |
+| shared rhythm / personal rhythm | the pattern common to everyone (fixed effects) / how a person's pattern differs from it (person random effects) |
+
+**Which day carries the weekday.** Gap starts: the weekday of `d + 1` (equal to `dow_t` of the onset model for activity and heart rate; checked by a test). Gap ends: the weekday of the return day.
+**The sleep stream is aligned to the night it started**: the weekday and the holiday lookup use the stored date minus one day (the stored date is the wake-up date). Gaps, days since return and study day are
+unchanged by this, because the shift is the same for every day of a person. The shift is made in one function (`wr_align_date`). Dates are used as stored (it is not known whether they are local time).
+
+**Rows.**
+* *Gap-start rows*: one per observed day `d` except each person's last observed day; outcome `start = 1` if a gap starts on `d + 1`. Unlike the primary onset model, **no record on `d - 1` and no 7-day baseline are required**,
+  because the main models have no behaviour predictors; this keeps the day right after a return (days since return = 1), which matters for the charging question. The primary model's rows are used only in two sensitivity analyses.
+* *Gap-end rows*: for a gap of length `L` starting on `s`, the days `t = s + 1, ..., s + L` (days so far in the gap = `t - s`), outcome `end = 1` only on the return day `t = s + L`. Because the longest gap is 14 days, a row with 14 days so far
+  always ends: those rows are dropped and counted (`flow`); levels 1-13. Every gap in the data ends (gaps are interior by construction), so the gap-end model describes **when people return, given that they do return**.
+* *Adjusters* (as built for the primary model): `cohort` (reference Healthy), `age10`, `sex2`, a natural spline of study day (3 df), device family, `cci`, `cci_missing`; gap-start rows also `prev_gap_len_l` and `any_prior_gap`.
+  **Days since return is not an adjuster** of the main models: it is the competing explanation and enters only as the factor in H2. Terms that are constant in the data are dropped.
+* *Weekday coding*: sum-to-zero contrasts, so each coefficient is a weekday against the average day and no day is the reference. The first weekly harmonic `c1 = cos(2 pi k / 7)`, `s1 = sin(2 pi k / 7)` enters the random effects.
+
+**Models.** Binomial mixed models, logit link, `lme4::glmer` (`nAGQ = 0`, bobyqa, the pipeline's settings), one checkpointed unit per fit, run in a worker behind the memory guard. The random effects are
+`(1 + c1 + s1 | person_id)`: a person intercept and a **personal weekly rhythm** (the first harmonic has no fixed phase, so nothing depends on which day is Monday). If the correlated fit of `S1` (`E1`) does not converge or is singular,
+every fit of that stream and row type uses `(1 | person_id) + (0 + c1 | person_id) + (0 + s1 | person_id)` and `re_structure` records it, so **the two models of every test have the same random effects** (H3 excepted by design).
+The fits are rows of one specification table (`wr_specs()`): `S0-S5` (gap starts), `E0, E1, E4` (gap ends) and the sensitivity fits; the exact formulas are in MODEL_EQUATIONS.md section 6.
+
+**Hypotheses and tests** (fixed before any real data were seen). Likelihood-ratio tests, `chisq = max(0, 2 (logLik_big - logLik_small))`, df from the fits; Holm within each family.
+
+| id | in words | test | df | Holm family |
+|---|---|---|---|---|
+| H1 | the chance of a gap start (H1s) / gap end (H1e, given days so far in the gap) differs by weekday, in a way shared by people | `S1` vs `S0`; `E1` vs `E0` | 6 | 3 streams x {start, end} = 6 tests |
+| H2 | the weekday pattern of gap starts remains after days since return is accounted for | `S3` vs `S2` | 6 | 3 streams |
+| H2r | (reported, not a hypothesis) days since return adds to weekday | `S3` vs `S1` | 21 | not adjusted |
+| H3 | people have personal weekly rhythms of gap starts | `S1` vs `S5` | 5 (correlated) or 2 (independent harmonics) | 3 streams |
+| H4 | the weekly pattern differs between cohorts | `S4` vs `S1`; `E4` vs `E1` | 6 x (cohorts - 1) | 3 streams x {start, end} = 6 tests |
+
+* **H3 is a test of variances on their boundary.** The ordinary chi-square p value is used; it is conservative (too large). It is not corrected, and the table note says so. The df is whatever the fits give: 5 with the correlated
+  structure (the 3 x 3 random-effects covariance has 6 parameters against 1) and 2 with independent harmonics (3 variances against 1).
+* **How to read H2 (a rule, not a conclusion).** If the weekday pattern holds after days since return (small H2 p and little shrinkage), it is a **calendar routine**. If the weekday pattern shrinks to about nothing, it was a **cycle**
+  (the gap starts depend on how long the watch has been back on). If both terms matter, both are present.
+* **With tens of thousands of gaps, every test may be significant.** The p values then mostly show that a pattern is not exactly zero; the documentation, the figures and `results_summary.md` lead with effect sizes.
+* Everything else (sensitivity analyses, descriptions) is not multiplicity-adjusted and is exploratory. **No weekend-versus-weekday contrast is tested**: in the first look Saturday was low and Sunday high, so a pooled weekend contrast cancels; the full weekday profile is the description.
+
+**Effect sizes.**
+* *Population-average weekday profile* (every fit with weekday): the predicted % of gap starts (gap ends) on each weekday, averaged over a seeded sample of rows (`n_profile_rows`, 2,000; the weekday set to `k`, every other covariate as observed) and over the random effects
+  (`n_re_draws` draws from their estimated covariance, one shared set); 95% intervals from `n_beta_draws` draws of the fixed effects from their estimated normal distribution with the random-effects covariance held fixed (the approach of `risk_unadjusted`).
+  **Ratio to the average day** `p_k / mean(p)` and **peak-to-trough ratio** `max p / min p`, with intervals from the same draws, and the peak and trough weekday of the point estimate. These are ratios of predicted probabilities, never odds ratios or risk ratios of a person.
+* *H2 shrinkage*: `1 - log(ptr_S3) / log(ptr_S1)`, the share of the weekday pattern explained by days since return (point estimate); the days-since-return curve (predicted % by level, averaged over the observed weekday mix) from `S2` and `S3`.
+* *Personal rhythm* (from `S1`): the 7 weekday effects are projected on the first harmonic, `a = (2/7) sum e_k cos(2 pi k / 7)`, `b = (2/7) sum e_k sin(2 pi k / 7)`; a person's rhythm is `(a + u_c, b + u_s)`, with amplitude `A`, peak day `atan2(b + u_s, a + u_c) 7 / (2 pi)` and
+  peak-to-trough ratio `exp(2 A)` (odds scale). Reported from 10,000 seeded draws of `(u_c, u_s)` (model based, not shrunk): the SDs, the median and the 10th and 90th percentiles of the person peak-to-trough ratio, and the share of people whose peak day lies within one day of the
+  shared peak. BLUPs are only binned for Figure 3 and are shrunk toward the shared rhythm.
+* *Cohorts* (`S4`, `E4`): the weekday profile per cohort, as the ratio to the cohort's own average day (shape) and as % (level).
+
+**Sensitivity analyses** (estimates only; no new hypotheses): `holidays` (rows whose outcome day lies within +/- 1 day of a US federal holiday or its observed date are dropped; holidays are built by rule, fixed dates and observed dates, Juneteenth from 2021; `S1, S3, E1`);
+`before_first_gap` (gap-start rows up to and including each person's first gap start, days since return = days since the first record, the cleanest separation of weekday from days since return; the weekday of the first record, which may be tied to enrolment, is tabulated; `S1, S3`);
+`activity_same_rows` and `activity` (`S1` on the primary model's rows, without and with the stream's primary predictors of `d - 1`; the same rows, only the predictors differ, so the pair shows whether behaviour explains the weekday pattern).
+
+**Descriptions (no model).** Crude weekday rates by cohort with a person-clustered interval (`cluster_mean_ci`); the share of gaps of each length by start weekday; weekday x days since return cells (days at risk, gap starts, people, crude rate, ratio to the overall rate; this also shows the
+identifying variation); the crude days-since-return curve by device family (families with at least 20 people; description only, no test); a flow table of rows, people and events of every fit and of what was dropped. **Small cells (All of Us dissemination rule):** a cell that represents 1-19 people is not shown
+(`<20`, values NA, drawn grey); cells with fewer than 200 days at risk are flagged `low_exposure` and drawn grey. Person-level values are never written to a table.
+
+**Figures** (`<results>/weekday/figures/`): `weekday_rhythm_profile` (H1: predicted % by weekday, gap start and gap end by stream, crude rates hollow behind, dashed weekly average, peak-to-trough in the corner), `weekday_rhythm_calendar_vs_cycle_<stream>` (H2: heat map of weekday x days since return;
+**vertical stripes = calendar routine, horizontal stripes = charging cycle**; the weekday ratios with and without days since return; the days-since-return curve), `weekday_rhythm_personal_<stream>` (H3: a circle where the angle is the personal peak weekday and the distance the amplitude; binned people, the shared rhythm as an arrow, the model-based
+95% region as an ellipse; never individual points), `weekday_rhythm_cohort` and `_cohort_level` (H4), `weekday_rhythm_sensitivity_start` / `_end`, and supplements `weekday_rhythm_gap_length`, `weekday_rhythm_dsr_counts_<stream>`, `weekday_rhythm_dsr_by_device`.
+
+**Left out on purpose** (considered and dropped): a periodogram or autocorrelation analysis (the mixed-model weekday and personal terms answer the same questions with the covariates and the dependence handled); a separate cosinor model (the first harmonic is used inside the random effects, and the weekday is kept as 7 categories so that
+a non-sinusoidal pattern is not forced); a Rayleigh test (it ignores the unequal exposure of the weekdays); a cyclic-shift permutation test (it only re-proves the shared weekday pattern that H1 tests); a rhythm stability index; a random-half split (the pattern was first seen in all of these people, so a split is not an independent confirmation; the 50-60% group is the planned one);
+an analysis after study day 42; age or sex x weekday interactions; a weekend contrast test (see above); any test of device family (description only).
+
+**Limits.** Dates are as stored. Only interior gaps are seen and gaps are at most 14 days, so returns are truncated (the gap-end model is conditional on returning). Weekday and days since return are only partly separable: they differ only because runs of observed days start on different weekdays, and the identifying variation
+is shown in the cell table. The device family is the person's main family and is time-invariant; battery life is not known from the data, and there is no direct charging record. Heart-rate / activity gaps and sleep gaps have different mechanisms (a missing night is a night without the watch). The personal-rhythm quantities are
+model based and depend on the normal random-effect assumption; BLUPs are shrunk. H3 p values are conservative. Large samples make p values uninformative. The analysis uses the people of the current selection (the >= 70% compliance group), the pattern was seen in these people, and no independent confirmation exists yet; the planned confirmation is the 50-60% group.
+
+**Reproducibility.** Every fit is a unit of `run_unit`; its key contains `cfg$weekday_rhythm`, the fit specification, the random-effects structure, the md5 of the L1 files and the person sample, so a changed setting refits only the affected units. All draws are seeded from `cfg$seed`, the stream and the fit id (not from the order of the units or the number of
+workers). The settings are in `cfg$weekday_rhythm` (they are not part of the keys of any other analysis).
 
 ## 4. Descriptive statistics of the metric values [`descriptive.R`, `plots.R`]
 
@@ -328,7 +419,7 @@ sensitivity analysis (the spline and random-slope analyses are tests and are not
 | `first_gap_only` | only days up to and including each person's first gap onset (at most one event per person; no gap history) |
 | `main_sleep_only` | sleep only: a night counts as observed only if a main sleep exists (naps alone do not count) |
 | `day_before_gap`, `last_full_day_same_rows`, `day_before_gap_same_rows`, `both_days` | the **predictor-day check**: the predictors of the day right before the gap (d) instead of the last full day (d - 1), see 6.1 |
-| `wear_ge16h`, `wear_ge20h` | the predictors of day d (as `day_before_gap`), only on the rows whose day d has >= 16 / >= 20 hours of heart-rate minutes recorded; the person's usual is unchanged. Section 6.2 |
+| `wear_ge16h`, `wear_ge20h`, `wear_ge22h` | the predictors of day d (as `day_before_gap`), only on the rows whose day d has >= 16 / >= 20 / >= 22 hours of heart-rate minutes recorded; the person's usual is unchanged. Section 6.2 |
 | `conditional_logit` | `survival::clogit` with `strata(person_id)`, Efron approximation, persons with >= 1 event only; time-invariant terms (cohort, age, sex, `b_`) cancel. No random-effect assumption. (Before this revision the formula was written `survival::strata(person_id)`, which survival does not recognise as the stratification special: the person ids then entered as dummy covariates. This was corrected; earlier conditional-logit numbers should not be compared.) |
 | `cluster_robust_logit` | pooled logistic regression without random effect, person-clustered sandwich standard errors (`sandwich::vcovCL`) |
 | `spline_vs_linear` | LRT replacing the linear `w` term by a natural spline with 3 df (2 extra df); small p: non-linear. Reported in `p` and the note (`chisq`, `df`), no OR |
@@ -377,7 +468,7 @@ model; Wald test of `b_(d-1) - b_d`, variance `v + v' - 2 cov`, Holm over the st
 model of C is the test. Table `gap_day_check`, figures `gapB_day_check_<stream>`, `gapC_day_check_<stream>`. The run-in analysis uses the study day of the predictor day (`d - 1`).
 
 
-### 6.2 Wear time of the last day: description and the analyses `wear_ge16h`, `wear_ge20h` [`wear.R`, `onset_model.R`]
+### 6.2 Wear time of the last day: description and the analyses `wear_ge16h`, `wear_ge20h`, `wear_ge22h` [`wear.R`, `onset_model.R`]
 
 **Question.** Section 6.1 asks whether the association is carried by a partial last day by moving the predictor day. This section looks at the wear of day `d` itself:
 how long was the watch worn on the last day before a gap, and what does the association look like when only days with a long wear are used?
@@ -397,7 +488,7 @@ of the two means, in percentage points of days under the threshold and in mean h
 `p` and a Holm adjustment over the cohorts of one stream and quantity. Days over 1440 minutes (if any) are counted (`n_over_max`) and clipped in the distribution. It is descriptive: a
 last-day distribution to the left of the ordinary one means that the day before a gap is more often a short-wear day, which is what a partial-day artifact predicts.
 
-**Analyses (stage `sensitivity`).** `wear_ge<h>h`, `h` in `cfg$wear$hours` = (16, 20) **[convention]**: the primary joint adjusted model for `k = 1` (formula of MODEL_EQUATIONS.md 1), the
+**Analyses (stage `sensitivity`).** `wear_ge<h>h`, `h` in `cfg$wear$hours` = (16, 20, 22) **[convention]**: the primary joint adjusted model for `k = 1` (formula of MODEL_EQUATIONS.md 1), the
 predictors read from day `d` as in `day_before_gap`, and only the rows whose own day `d` has `wear_min(d) >= 60 h` (rows with no heart-rate record on `d` are out). The person's
 usual (the mean of all earlier days with a record, at least 7) and the between-person reference are the primary ones, so the **only** difference from `day_before_gap` is the row
 restriction. The tested term is `w_act_steps` of day `d`; all terms are stored in `sensitivity_all_terms`.
@@ -407,12 +498,12 @@ gaps that begin with a partial last day and conditions on a variable that is par
 day**: a different question from the primary one, not a correction of it. It is read next to the primary model, `day_before_gap` and the description above, together with the events lost.
 
 **Rows and events (`wear_filter_flow`).** Per stream: the rows, people, events, event % and the mean of the primary term (`mean_w`) for the primary model's rows, every row with complete
-predictors on `d`, the rows with no heart-rate record, each wear class (< 16 h, 16 to < 20 h, >= 20 h) and the rows kept by each analysis. `mean_w` shows the shift of the within-person
+predictors on `d`, the rows with no heart-rate record, each wear class (< 16 h, 16 to < 20 h, 20 to < 22 h, >= 22 h) and the rows kept by each analysis. `mean_w` shows the shift of the within-person
 score on full-wear days: the usual contains partial days, so full-wear days sit slightly above it. A constant shift is absorbed by the intercept; the person-specific part (people with
 more partial days have a lower usual, and also more gaps) is second order and largely absorbed by the between-person terms; a `mean_w` far from the primary model's value should be
 mentioned when the estimate is interpreted.
 
-**Limits.** 16 and 20 h are conventions; a normal charging routine of 1-2 hours a day can make 20 h strict, which the distribution shows. Fewer events widen the intervals, and a
+**Limits.** 16, 20 and 22 h are conventions; a normal charging routine of 1-2 hours a day can make 22 h (and 20 h) strict, which the distribution shows. Fewer events widen the intervals, and a
 fit under `cfg$model$min_events` is reported as `not_estimable`. The analyses are not adjusted for multiplicity (sensitivity analyses, section 9). They need the heart-rate day table for
 every stream (`stream_inputs(..., wear = TRUE)`); the checkpoint of each wear unit carries its threshold and the fingerprint of the heart-rate table, so changed data or a changed
 threshold are refitted and the other results stay valid.
@@ -512,8 +603,8 @@ intervals: model B in SD units of the activity on the first full day back (per +
 | cohort difference in the primary effect | per-cohort OR | LRT `chisq`, `df`, `p` | `cohort_specific`, `cohort_interaction` |
 | absolute risk | % risk at -1, 0, +1 SD (+ interval) | - | `risk_unadjusted` |
 | sensitivity | OR per estimator | Wald `p`; LRT `p` for spline / random slope | `sensitivity`, `sensitivity_all_terms` |
-| wear of the last day (description) | share of days under 16 / 20 h with a person-clustered 95% interval; median (IQR) of the hours; last - ordinary difference | cluster-robust (CR1) `p`, Holm over cohorts | `wear_last_day`, `wear_last_day_distribution`, `wear_last_day_contrast` |
-| wear sensitivity analyses | OR per +1 SD of `w_act_steps` of day d on rows with >= 16 / >= 20 h of wear on d | Wald `p`; rows and events lost in `wear_filter_flow` | `sensitivity` / `sensitivity_all_terms` (`analysis = wear_ge16h`, `wear_ge20h`), `wear_filter_flow` |
+| wear of the last day (description) | share of days under 16 / 20 / 22 h with a person-clustered 95% interval; median (IQR) of the hours; last - ordinary difference | cluster-robust (CR1) `p`, Holm over cohorts | `wear_last_day`, `wear_last_day_distribution`, `wear_last_day_contrast` |
+| wear sensitivity analyses | OR per +1 SD of `w_act_steps` of day d on rows with >= 16 / >= 20 / >= 22 h of wear on d | Wald `p`; rows and events lost in `wear_filter_flow` | `sensitivity` / `sensitivity_all_terms` (`analysis = wear_ge16h`, `wear_ge20h`), `wear_filter_flow` |
 | model B | change per doubling of gap length (SD units) | normal-approximation `p` | `model_B_post_gap_activity` (+ `model_B_curve`, `model_B_observed`, `model_B_all_terms` = every fixed effect) |
 | model C | OR of a longer gap per +1 SD higher than usual; predicted probabilities | Wald `p`; proportional-odds LRT `po_p` | `model_C_gap_length`, `model_C_predicted_probs`, `model_C_all_terms` = every coefficient |
 | MVPA before the gap (models B, C) | B: SD change per +1 SD MVPA; C: OR of a longer gap per +1 SD MVPA (with and without MVPA in the model) | Wald `p`, `vif_equiv` | `gap_mvpa_effects` |
@@ -521,13 +612,16 @@ intervals: model B in SD units of the activity on the first full day back (per +
 | full-period standardization (sensitivity) | OR per +1 SD, same terms as the primary model | Wald `p` | `sensitivity` / `sensitivity_all_terms` (`analysis = full_period_standardization`), `model_B_post_gap_activity` / `model_C_gap_length` (`*_fullperiod`) |
 | run-in: description | missing days in the first N days by cohort; gap rate after the run-in by run-in group; steps-gap curve by run-in group; person-level Spearman rho | none (descriptive) | `runin_flow`, `runin_distribution`, `runin_rate`, `runin_steps_by_group`, `runin_association` |
 | run-in: models | OR (onset, C) / SD change (B) of every term, without and with the run-in and its interaction (primary), other forms (sensitivity); effect of steps at 0, 1, 3, 7 missing days | primary: H1 `cov0`, H2 key term x `cov0` (Wald), Holm over the streams; sensitivity: LRT of H2 vs the main-effect model, linear coding, shape (AIC, LRT) | `runin_onset_coefficients`, `runin_gapB(_all_terms)`, `runin_gapC(_all_terms)`, `runin_tests`, `runin_shape`, `runin_effect_by_missing`, `runin_primary_effect`, `runin_quality` |
+| weekly rhythm (3b): weekday profile | predicted % by weekday, ratio to the average day, peak-to-trough ratio (95% intervals from coefficient draws) | H1 `S1` vs `S0`, `E1` vs `E0` (LRT, Holm over 6 tests) | `weekday_rhythm_profile`, `weekday_rhythm_summary`, `weekday_rhythm_tests` (in `<results>/weekday/tables/`) |
+| weekly rhythm: calendar routine vs charging cycle | H2 shrinkage; days-since-return curve | H2 `S3` vs `S2` (Holm over 3 streams); H2r `S3` vs `S1` (not adjusted) | `weekday_rhythm_shrinkage`, `weekday_rhythm_dsr_curve`, `weekday_rhythm_tests` |
+| weekly rhythm: personal and cohort | person peak-to-trough percentiles, share near the shared peak; weekday profile per cohort | H3 `S1` vs `S5` (conservative); H4 `S4` vs `S1`, `E4` vs `E1` | `weekday_rhythm_personal`, `weekday_rhythm_profile`, `weekday_rhythm_tests` |
 | multicollinearity | GVIF, GVIF^(1/(2 df)), VIF-equivalent, flag | none (diagnostic) | `model_collinearity` (all models), `onset_collinearity`, `sensitivity_collinearity`, `gap_collinearity`, `runin_onset_collinearity`, `runin_gap_collinearity` |
 | joint tests of terms | chi-square of all coefficients of a term | Wald chi-square, `df`, `p` | `model_term_tests`, `onset_term_tests`, `gap_term_tests`, `runin_onset_term_tests`, `runin_gap_term_tests` |
 
 ## 9. Multiplicity, assumptions and what the results can and cannot say
 
 * **Multiplicity**: Holm is applied (a) to the pairwise cohort tests within each stream x variable and (b) to the primary onset
-  test across streams. Nothing else is adjusted: the Kruskal-Wallis tests across 3 variables x 3 streams, all exploratory onset specifications,
+  test across streams. The weekly-rhythm analysis (3b) has four pre-specified families, each Holm-adjusted on its own: H1 (3 streams x {gap start, gap end}), H2 (3 streams), H3 (3 streams), H4 (3 streams x {gap start, gap end}); H2r, the sensitivity analyses and the descriptions are not adjusted. Nothing else is adjusted: the Kruskal-Wallis tests across 3 variables x 3 streams, all exploratory onset specifications,
   the weekday tests, the sensitivity analyses and models B and C should be read as descriptive or exploratory.
 * **Independence**: person-level tests treat people as independent (hence the overlap policy). Within a person, the mixed models use a random
   intercept; serial dependence beyond the gap-history terms, calendar and study-time terms is not modelled, and the bootstrap/clustered
@@ -728,3 +822,26 @@ The model standard errors match the replicate-to-replicate SD (0.070 vs 0.068), 
 setting. The full-period estimate is 0.016 larger in magnitude, which with 24 replicates (standard error of the mean 0.013) cannot be separated from noise; it has about 9% more
 events because it needs no minimum baseline. The simulated effect does not depend on the person's future, so this check shows that dropping the look-ahead costs no accuracy
 here; it cannot show how much look-ahead matters in real data, which is what the `full_period_standardization` sensitivity analysis is for.
+
+
+### 13.2 Weekly rhythm of gap starts and gap ends (section 3b): tests and a simulation with a known truth (not real data)
+
+**Unit tests** (`tests/testthat/test-weekday-rhythm.R`): the gap-start weekday equals the onset model's `dow_t`; the sleep night-start shift moves the weekday by exactly one day and changes nothing else; days since return against hand counts, including before the first gap;
+gap-end rows (rows per gap = its length, outcome only on the return day, 14 days so far dropped and counted); US federal holidays against known dates for 2019-2024 including observed dates; the first-harmonic projection recovers a planted rhythm; ratio to the average day and
+peak-to-trough against hand computation; Holm within each family only (H2r not adjusted) and a test whose fits have different random-effects structures is not made; small cells (1-19 people) are suppressed; the fits of a test share their rows and random-effects structure,
+checkpoints resume and the key changes with `cfg$weekday_rhythm`; every figure builds with its intended size.
+
+**Simulation** (`pipeline/validate_weekday_rhythm.R`; `simulate_gap_process()` plants the truth). Three scenarios, **10 replicates each** (fewer than 20: the fits are slow), each of 200 simulated people followed for 150 days (about 30,000 gap-start rows, about 1,500 gap starts per replicate); per replicate `S1, S0, S2, S3, S5` were fitted with the pipeline's own functions. Planted: *calendar* = a shared weekday effect on gap starts (log-odds Mon +0.4, Tue +0.1, Wed 0, Thu +0.1, Fri -0.9, Sat -0.4, Sun +0.3, i.e. a true Friday ratio to the average day of about 0.40); *cycle* = the gap-start chance raised by 1.2 log-odds at 6-7 days since return, no weekday effect; *personal* = a weekly rhythm with a random peak day per person (amplitude 0.25-0.75 log-odds, true person peak-to-trough ratio 10th / 50th / 90th percentile 1.82 / 2.72 / 4.06) and no shared effect. The true weekday ratio is `exp(effect) / mean(exp(effect))` in the calendar scenario (exact when the gap-start chance is a few percent) and 1 in the other two.
+
+| scenario | H1 detected (p < 0.05) | H2 detected | H2r detected | H3 detected | mean weekday-ratio bias | coverage of the 95% interval of the weekday ratios | other |
+|---|---|---|---|---|---|---|---|
+| calendar | 10 / 10 | 10 / 10 | 0 / 10 | 1 / 10 | 0.000 | 93% | Friday ratio 0.44 (truth 0.40); H2 shrinkage -0.001 (no share of the pattern explained by days since return) |
+| cycle | 1 / 10 | 1 / 10 | 10 / 10 | 1 / 10 | 0.000 | 89% | the days-since-return curve peaks at 6-7 days in 10 / 10 replicates; Friday ratio 1.01 (truth 1) |
+| personal | 2 / 10 | 1 / 10 | 1 / 10 | 10 / 10 | 0.000 | 89% | person peak-to-trough, mean over replicates: 10th / 50th / 90th percentile 1.39 / 2.36 / 4.99 (planted 1.82 / 2.72 / 4.06) |
+
+The correlated random effects were kept in 6 / 10 (cycle) and 10 / 10 (personal) replicates; the calendar scenario (no personal rhythm) and 4 / 10 cycle replicates fell back to independent harmonics (singular correlated fit), as designed.
+
+**Reading.** The analysis does what it should in the three situations: a shared calendar pattern is detected and survives days since return (H1 and H2 detected, shrinkage about 0); a cycle is found by days since return and the weekday pattern is absent (H2r detected, H1 and H2 about null, the curve peaks at the planted days); a purely personal rhythm is detected only by H3. The weekday ratios are unbiased on average, with about the nominal coverage (89-93% with 10 replicates of 7 weekdays). The Friday ratio is a little higher than the truth (0.44 against 0.40). **Limits of this check:** with 10 replicates a rejection rate cannot be told from 5% (1-2 rejections in the null cells); the **personal-rhythm percentiles do not cover the planted values** (the 10th percentile is too low and the 90th too high): the model assumes normal random effects for the two harmonic coefficients, while the planted amplitudes are uniform, so the model-based spread of personal peak-to-trough ratios is wider than the truth and the median is slightly low. Read those percentiles as a model-based summary of how much people differ, not as exact quantiles.
+
+**Not validated:** behaviour on the real data (the real distribution of gap starts, the real random-effects structure and how often the correlated structure is singular, the run time at full size), the correlation between the two fits of the H2 shrinkage (its interval is not given),
+and the coverage of the personal-rhythm quantities when the random effects are not normal (see above).

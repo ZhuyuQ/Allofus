@@ -103,6 +103,7 @@ build_onset_formula <- function(preds, adjusted, k, baseline = "whole", drop_col
 #                 measure in every stream). A day with no heart-rate record has no wear and is dropped. Use with day = "day_before_gap" (analyses wear_ge<h>h);
 #                 the person's usual is not changed.
 #   keep_wear     TRUE -> the output keeps `wear_min` (the descriptive table wear_filter_flow)
+#   keep_date     TRUE -> the output keeps `date`, the row's own day d (the weekday analysis, weekday_rhythm.R)
 #   runin_terms   which run-in terms the formula gets: "reference" | "main" | "interaction" | "categorical" | "linear_interaction"
 build_onset_data <- function(bundle, spec, cfg, variant = list()) {
   baseline <- variant$baseline %||% "whole"
@@ -159,7 +160,7 @@ build_onset_data <- function(bundle, spec, cfg, variant = list()) {
   adj_cols <- intersect(adj_cols, names(rs))                               # device / cci columns exist only when cfg$model switches them on
   pred_cols <- c(paste0(pre, preds), paste0("b_", preds))
   out_cols <- unique(c("person_id", ycol, pred_cols,
-                       if (spec$adjusted) adj_cols, if (!is.null(variant$runin_days)) "runin_missing", if (want_wear) "wear_min"))
+                       if (spec$adjusted) adj_cols, if (!is.null(variant$runin_days)) "runin_missing", if (want_wear) "wear_min", if (isTRUE(variant$keep_date)) "date"))
   out <- rs[keep, ..out_cols]
   # the adjusters (weekday, time in study, gap history) stay those of day d, the day before the gap: weekday of d is one-to-one with the weekday of d - 1,
   # and the gap history of d is that of d - 1 (no gap lies between them)

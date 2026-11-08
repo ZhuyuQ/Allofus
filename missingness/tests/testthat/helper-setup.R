@@ -34,7 +34,7 @@ random_days <- function(n = 25, seed = 1) {
 }
 
 # Heart-rate minutes recorded per day with variation (the simulated hr table is almost always ~1405 min), deterministic (no random numbers drawn):
-# about 13% of the days under 16 h and 31% under 20 h; about 3% of the days have no heart-rate record at all.
+# about 13% of the days under 16 h, 31% under 20 h and 45% under 22 h; about 3% of the days have no heart-rate record at all.
 sim_wear <- function(day_tables) {
   w <- day_tables$hr[, .(person_id, date)]
   u <- ((as.numeric(w$person_id) * 7919 + as.numeric(w$date) * 104729) %% 1000) / 1000

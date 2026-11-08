@@ -153,3 +153,38 @@ simulate_inputs <- function(cfg, ...) {
                                 first_record_dates(day_tables), cfg)
   list(day_tables = day_tables, persons = persons, sim = sim)
 }
+
+
+# ---- a gap process with a planted weekly rhythm (validation of the weekday analysis; weekday_rhythm.R) ----------------------------------------------------
+#
+# Persons start on random days (so runs of observed days start on every weekday). Each day a person who was observed the day before starts a gap with
+# probability plogis(base_logit + person effect + weekday_effect[weekday of the gap's first day] + dsr_effect(days since return) +
+# personal_amp_i * cos(2 pi (weekday - phase_i) / 7)); a gap lasts 1 + Geometric(gap_p) days, at most max_gap. Planted truths:
+#   calendar  weekday_effect (a shared weekly pattern)        cycle  dsr_effect (a peak at some days since return, no weekday effect)
+#   personal  personal_amp (a weekly rhythm with a random peak day per person, no shared effect)
+# Returns list(day_tables = list(activity, sleep, hr: person_id, date), persons). All three streams share one observation pattern.
+simulate_gap_process <- function(n = 400L, T = 200L, seed = 1L, base_logit = -3, weekday_effect = rep(0, 7), dsr_effect = function(d) 0 * d,
+                                 personal_amp = 0, gap_p = 0.5, max_gap = 14L) {
+  set.seed(seed)
+  start0 <- as.Date("2021-01-04") + sample(0:200, n, TRUE)
+  pe <- stats::rnorm(n, 0, 0.3); phase <- stats::runif(n, 0, 7); amp <- personal_amp * stats::runif(n, 0.5, 1.5)
+  obs <- matrix(TRUE, n, T); gap_left <- integer(n); dsr <- rep(1L, n)
+  for (t in 2:T) {
+    k <- as.integer((data.table::wday(start0 + (t - 1L)) + 5L) %% 7L)
+    in_gap <- gap_left > 0L
+    obs[in_gap, t] <- FALSE; gap_left[in_gap] <- gap_left[in_gap] - 1L
+    can <- which(!in_gap & obs[, t - 1L])
+    h <- stats::plogis(base_logit + pe[can] + weekday_effect[k[can] + 1L] + dsr_effect(pmin(dsr[can], 22L)) + amp[can] * cos(2 * pi * (k[can] - phase[can]) / 7))
+    who <- can[stats::runif(length(can)) < h]
+    if (length(who)) { obs[who, t] <- FALSE; gap_left[who] <- pmin(1L + stats::rgeom(length(who), gap_p), max_gap) - 1L }
+    dsr <- ifelse(obs[, t] & obs[, t - 1L], dsr + 1L, ifelse(obs[, t], 1L, 0L))
+  }
+  idx <- which(obs, arr.ind = TRUE)
+  day <- data.table(person_id = 1000L + idx[, 1L], date = start0[idx[, 1L]] + (idx[, 2L] - 1L))
+  setorder(day, person_id, date)
+  cohort <- rep(c("Insomnia", "Diabetes", "Healthy", "Prostate"), length.out = n)
+  persons <- data.table(person_id = 1000L + seq_len(n), cohort = cohort, sex = ifelse(cohort == "Prostate", "Male", sample(c("Female", "Male"), n, TRUE)),
+                        age_first = ifelse(cohort == "Prostate", sample(66:85, n, TRUE), sample(22:85, n, TRUE)), cci_score = stats::rpois(n, 2))
+  persons[, cci_group := cut(cci_score, c(-Inf, 0, 2, 4, Inf), c("0", "1-2", "3-4", ">=5"))]
+  list(day_tables = list(activity = copy(day), sleep = copy(day), hr = copy(day)), persons = persons)
+}

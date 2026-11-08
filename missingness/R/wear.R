@@ -82,7 +82,7 @@ plot_wear_last_day <- function(dist, cfg) {
     scale_y_continuous(labels = function(x) paste0(round(100 * x), "%"), limits = c(0, 1)) +
     labs(title = "Wear Time on the Last Day Before a Gap",
          subtitle = ov_wrap(sprintf("Heart-rate hours recorded on day d (the same measure for all streams). Solid = d is the last day with a record before a gap; dashed = ordinary days (a record on d + 1, return days included). Y = share of days with at most x hours. Dotted lines: %s h. Days with no heart-rate record are not drawn (counted in wear_last_day.tsv).",
-                            paste(cfg$wear$hours, collapse = " and ")), 120),
+                            paste(cfg$wear$hours, collapse = ", ")), 120),
          x = "Heart-rate hours recorded on day d", y = "Cumulative share of days", colour = "Cohort", linetype = NULL) +
     theme_bw(base_size = 11) +
     theme(strip.text = element_text(face = "bold"), legend.position = "bottom", legend.box = "vertical")

@@ -11,7 +11,7 @@ counts, except in the `main_sleep_only` sensitivity where only `has_main_sleep` 
 rows collapsed to one row per day). **Gap**: >= 1 consecutive calendar days with no row between two observed days.
 
 **Wear** (`wear.R`; only the wear analyses use it): `wear_min(d)` = heart-rate minutes recorded on the calendar day `d` (`total_hr_min`, 0-1440), the same measure for the activity, sleep and
-heart-rate streams; NA = no heart-rate record on `d` (unknown wear). Threshold analyses: `wear_min(d) >= 60 h` with `h` = 16 and 20 (`cfg$wear$hours`).
+heart-rate streams; NA = no heart-rate record on `d` (unknown wear). Threshold analyses: `wear_min(d) >= 60 h` with `h` = 16, 20 and 22 (`cfg$wear$hours`).
 
 **People and covariates come from the full-pool selection** (`../selection/`): age = whole years at the person's earliest record over the three streams; CCI = `cci_calc_func()` with that age.
 
@@ -112,7 +112,7 @@ Each set enters as `w_p + b_p` for every predictor `p` of the set. Example (unad
 | `day_before_gap_same_rows` | `y_ge1` | the same rows and formula, but every `w_` and `b_` read from day d; outcome unchanged: a gap starts on d + 1 |
 | `both_days` | `y_ge1` | the same rows; the primary formula with day d, `+ lag1_w_act_steps` (steps on d - 1); reported: both estimates and the Wald test of `b_d - b_(d-1)`, variance `v_d + v_(d-1) - 2 cov` |
 | `main_sleep_only` (sleep only) | `y_ge1` | primary formula, but a night is "observed" only if it has a main sleep (`has_main_sleep`); gaps and risk set are rebuilt on that definition |
-| `wear_ge16h`, `wear_ge20h` | `y_ge1` | the `day_before_gap` model (every `w_` and `b_` read from day d, rows with complete predictors on d), restricted to the rows with `wear_min(d) >= 960` / `>= 1200` (rows with no heart-rate record on d excluded); the formula, the standardization (the usual = all earlier days, >= 7) and the outcome are the primary ones; term reported: `w_act_steps` (of d); the rows and events kept are in `wear_filter_flow` |
+| `wear_ge16h`, `wear_ge20h`, `wear_ge22h` | `y_ge1` | the `day_before_gap` model (every `w_` and `b_` read from day d, rows with complete predictors on d), restricted to the rows with `wear_min(d) >= 960` / `>= 1200` / `>= 1320` (rows with no heart-rate record on d excluded); the formula, the standardization (the usual = all earlier days, >= 7) and the outcome are the primary ones; term reported: `w_act_steps` (of d); the rows and events kept are in `wear_filter_flow` |
 | `conditional_logit` | `y_ge1` | `survival::clogit`, Efron: `y_ge1 ~ w_act_steps + w_act_sedentary + w_act_mvpa + dow_t + ns(study_day, 3) + prev_gap_len_l + any_prior_gap + days_since_return_l + strata(person_id)` (`strata` written without the `survival::` prefix so that survival recognises it) (sleep/hr: with their own `w_` terms too); only persons with >= 1 event; no `b_`, cohort, age, sex or year terms (they cancel or are time-invariant); `dow_t` kept only if it varies |
 | `cluster_robust_logit` | `y_ge1` | the primary formula without the random intercept (pooled `glm`, binomial), person-clustered sandwich SEs (`vcovCL`) |
 | `spline_vs_linear` | `y_ge1` | primary formula with `w_act_steps` replaced by `ns(w_act_steps, 3)`; likelihood-ratio test against the linear model (2 df) |
@@ -182,3 +182,77 @@ estimate with and without the run-in terms): STATISTICS.md section 10.
     V = covariance of the fixed effects without intercept / thresholds,  R = cov2cor(V)
     GVIF(term) = det(R_term) det(R_other) / det(R),  df = coefficients of the term,  VIF-equivalent = GVIF^(1/df)      (>= 5 high, >= 10 severe)
     joint Wald test of a term:  chisq = b_term' V_term^-1 b_term  on df = coefficients of the term
+
+
+## 6. Weekly rhythm of gap starts and gap ends (stage `weekday_rhythm`; `R/weekday_rhythm.R`)
+
+A separate analysis with its own rows and models; nothing in sections 1-5 changes. The formulas below are the strings the code builds (`wr_formula()`, printed
+for every specification; `device`, `cci` and `cci_missing` appear only when they vary in the data). Terms are those of STATISTICS.md 3b.
+
+**Weekday and its coding.** `k = 0` (Monday) ... `6` (Sunday) of the day that carries the outcome: the gap start day `d + 1` (equal to the onset model's `dow_t` for
+activity and heart rate) or the return day `t`. The **sleep stream is aligned to the night it started**: `k` and the holiday lookup use `stored date - 1`, done only in
+`wr_align_date()`. `weekday` is a factor with **sum-to-zero contrasts** (`contr.sum`): its 6 coefficients `weekday1 ... weekday6` are the log-odds of Monday ... Saturday
+against the average day, and Sunday is minus their sum. `c1 = cos(2 pi k / 7)`, `s1 = sin(2 pi k / 7)` (the first weekly harmonic) enter only the random effects.
+`ns1, ns2, ns3` = the natural spline basis (3 df) of `study_day`, computed on the rows of each fit.
+
+**Gap-start rows.** One row per observed day `d` except each person's last observed day. Outcome `start = 1` if a gap starts on `d + 1`, else 0. Neither a record on `d - 1` nor
+a 7-day baseline is required. `dsr_f` = days since return (`d - r + 1`, the return day `r` = 1; before the first gap `d - first record + 1`), a factor with levels `1, ..., 21, 22+`
+(reference level 1). `prev_gap_len_l = log2(1 + length of the last completed gap)`, `any_prior_gap` as in section 0.
+
+**Gap-end rows.** For a gap of length `L` that starts on `s`, one row for each `t = s + 1, ..., s + L` with days so far in the gap `dsf = t - s`; outcome `end = 1` only on the
+return day `t = s + L`. Rows with `dsf` above 13 (14 days so far always end, because the longest gap is 14 days) are dropped and counted. `dsf_f` = a factor with levels `1, ..., 13`.
+Adjusters of gap-end rows: `cohort, age10, sex2, ns1-ns3, device, cci, cci_missing` (no gap-history terms; days since return is not included).
+
+**Random effects.** `(1 + c1 + s1 | person_id)` (`correlated`): a person intercept and a personal first weekly harmonic. If the correlated fit of `S1` / `E1` does not converge or is
+singular, **every fit of that stream and row type** uses `(1 | person_id) + (0 + c1 | person_id) + (0 + s1 | person_id)` (`independent_harmonics`); `S5` always has `(1 | person_id)`.
+All fits: `lme4::glmer`, binomial, logit, `nAGQ = 0`, bobyqa (`cfg$model`).
+
+**Formulas** (`<RE>` = the random effects above; `A_s` = `cohort + age10 + sex2 + ns1 + ns2 + ns3 + device + cci + cci_missing + prev_gap_len_l + any_prior_gap`;
+`A_e` = `cohort + age10 + sex2 + ns1 + ns2 + ns3 + device + cci + cci_missing`; the terms of the fit that are constant in the data are dropped).
+
+| fit | rows | formula | used for |
+|---|---|---|---|
+| `S0` | gap start | `start ~ A_s + <RE>` | null of H1 (starts) |
+| `S1` | gap start | `start ~ A_s + weekday + <RE>` | H1 (starts), H3 and H4 null, Figures 1, 3 |
+| `S2` | gap start | `start ~ A_s + dsr_f + <RE>` | null of H2; days-since-return curve |
+| `S3` | gap start | `start ~ A_s + dsr_f + weekday + <RE>` | H2, H2r, Figure 2 |
+| `S4` | gap start | `start ~ A_s + weekday + weekday:cohort + <RE>` | H4 (starts), Figure 4 |
+| `S5` | gap start | `start ~ A_s + weekday + (1 | person_id)` | null of H3 |
+| `E0` | gap end | `end ~ A_e + dsf_f + <RE>` | null of H1 (ends) |
+| `E1` | gap end | `end ~ A_e + dsf_f + weekday + <RE>` | H1 (ends), H4 null, Figure 1 |
+| `E4` | gap end | `end ~ A_e + dsf_f + weekday + weekday:cohort + <RE>` | H4 (ends), Figure 4 |
+| `S1_holidays`, `S3_holidays`, `E1_holidays` | as `S1`, `S3`, `E1` | the same formulas on the rows whose outcome day is not within +/- 1 day of a US federal holiday or its observed date | sensitivity |
+| `S1_before_first_gap`, `S3_before_first_gap` | gap start | the formulas of `S1`, `S3` on the rows up to and including each person's first gap start (`any_prior_gap` and `prev_gap_len_l` are then constant and dropped; `dsr_f` = days since the first record) | sensitivity |
+| `S1_activity_same_rows` | gap start | the formula of `S1` on the rows of the primary onset model (a record on `d - 1` and complete predictors) | sensitivity |
+| `S1_activity` | gap start | `start ~ A_s + weekday + w_p + b_p (p = the stream's primary predictors of d - 1) + <RE>` on the same rows | sensitivity |
+
+**Likelihood-ratio tests** (`chisq = max(0, 2 (logLik_big - logLik_small))`, df = the difference in the numbers of parameters of the two fits, as counted by `logLik`):
+
+| id | big vs small | df | Holm family |
+|---|---|---|---|
+| `H1s` | `S1` vs `S0` | 6 | H1 (3 streams x {start, end}) |
+| `H1e` | `E1` vs `E0` | 6 | H1 |
+| `H2` | `S3` vs `S2` | 6 | H2 (3 streams) |
+| `H2r` | `S3` vs `S1` | 21 | none (reported) |
+| `H3` | `S1` vs `S5` | 5 (correlated) or 2 (independent harmonics) | H3 (3 streams) |
+| `H4s`, `H4e` | `S4` vs `S1`, `E4` vs `E1` | 6 x (cohorts - 1) | H4 (3 streams x {start, end}) |
+
+**Population-average profile.** For a weekday `j`, with `x_i` the observed covariates of a seeded sample of `n_profile_rows` rows (weekday set to `j`; for `S4` / `E4` the rows of one cohort),
+fixed effects `b` (the estimate, or one of `n_beta_draws` draws from `N(b, Vcov)`), random effects `u_m = (u_0, u_c, u_s)` (`n_re_draws` draws from `N(0, Sigma)`, one set shared by all weekdays and draws of `b`):
+
+    p_j(b) = mean over rows i and draws m of  plogis( x_i(j)' b + u_0m + u_cm cos(2 pi j / 7) + u_sm sin(2 pi j / 7) )
+    ratio_to_average_day_j = p_j / mean_j(p_j)          peak_to_trough = max_j p_j / min_j p_j
+    percent_j = 100 p_j;  95% intervals = 2.5% and 97.5% quantiles over the draws of b (Sigma held fixed); the point estimate uses the estimated b.
+
+These are ratios of predicted probabilities, not odds ratios or risk ratios of a person. The **days-since-return curve** is the same quantity with `dsr_f` set to each level and the weekday as observed
+(the random-effect term uses each row's own `c1`, `s1`), `n_curve_draws` coefficient draws.
+
+**H2 shrinkage.** `1 - log(peak_to_trough of S3) / log(peak_to_trough of S1)` (point estimate): the share of the weekday pattern explained by days since return.
+
+**Personal rhythm (from `S1`).** With `e_k` the 7 weekday effects (`e_k = weekday_{k+1}` for `k = 0..5`, `e_6 = -sum`):
+
+    a = (2/7) sum_k e_k cos(2 pi k / 7)          b = (2/7) sum_k e_k sin(2 pi k / 7)          shared peak day = atan2(b, a) 7 / (2 pi)  mod 7
+    person rhythm = (a + u_c, b + u_s),  amplitude A = sqrt((a + u_c)^2 + (b + u_s)^2),  peak day = atan2(b + u_s, a + u_c) 7 / (2 pi) mod 7,  peak-to-trough = exp(2 A)  (odds scale)
+
+Reported from `n_person_draws` (10,000) seeded draws of `(u_c, u_s)` from their estimated covariance (model based, not shrunk): the SDs of `u_0`, `u_c`, `u_s`, the median and the 10th and 90th percentiles of
+`exp(2 A)`, and the share of people whose peak day lies within one day of the shared peak day (circular distance). The BLUPs of `(u_c, u_s)` are only binned for Figure 3 (shrunk toward the shared rhythm).

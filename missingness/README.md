@@ -37,6 +37,9 @@ R/sensitivity.R           sensitivity analyses of the primary model; one checkpo
 R/gap_models.R            models B and C (use gap length), their full-period variants and the observed post-gap trajectory; independent units per stream
 R/outcome_variables.R     person-level % of days missing against each model variable: tests, adjusted odds ratios, figures
 R/device.R                Fitbit watch version: person table + timeline from the device export, as-of assignment to days, missing / composition statistics
+R/weekday_rhythm.R        weekly rhythm of gap starts and gap ends: rows, fits (S0-S5, E0, E1, E4 + sensitivity), tests H1-H4, profiles, personal rhythm, descriptions, results summary
+R/plots_weekday_rhythm.R  its figures
+pipeline/validate_weekday_rhythm.R   recovery of a planted weekday / cycle / personal rhythm on simulated data
 R/wear.R                 wear time of the last day before a gap (heart-rate minutes recorded): description by stream and cohort, rows kept by the wear sensitivity analyses
 R/runin.R                run-in analysis: wear in study days 15-42 (description), onset / B / C models after the run-in with and without it, tests, shape check
 R/plots.R                 ggplot2 figures in the style of the earlier notebooks + figure captions
@@ -48,6 +51,8 @@ pipeline/notebook_cells.R the notebook, Cells 1-19 (copy each "# ==== CELL n" bl
 pipeline/validate_simulation.R  validation of the primary estimate on simulated data with a known effect (bias, SE calibration, coverage)
 pipeline/run_exports.R    step 0, only if the CSV exports are missing (e.g. after a migration)
 pipeline/run_etl.R        run once per export     |  pipeline/run_missingness.R   the analysis
+pipeline/run_band.R       the pipeline on ANOTHER compliance group (50-60%): selection, exports, ETL, primary onset model, sensitivity analyses, and the comparison with the >= 70% run
+pipeline/compare_bands.R  the comparison itself (tables and figures of two finished runs; used by run_band.R Cell 8)
 pipeline/run_demo.R       end-to-end on simulated data
 tests/                    Rscript tests/testthat.R   (about 5 minutes)
 ```
@@ -108,6 +113,7 @@ people per cohort after the overlap rule (Cell 5; `cohort_overlap.tsv`) -> the u
 | 2 | **Temporal structure** (Cell 11, 11b) | `transition`, `study_week_rates`, `calendar_year_rates`, `weekday_rates`, `weekday_tests`, `weekday_odds_ratios`, `missing_trend_tests`, `missing_trend_heterogeneity`, `missing_weekday_*`, `age_rates` | `transition`, `missing_by_study_week`, `missing_by_year`, `missing_by_weekday`, `missing_by_age` |
 | 1 | **Descriptive: person-level % of days missing against every model variable** (Cell 11e) | `outcome_variable_tests`, `outcome_variable_by_cohort`, `outcome_variable_contrasts`, `outcome_variable_models`, `outcome_variable_summary`, `outcome_variable_cells` | `outcome_by_variable_<variable>` (one per variable: cohort, sex, watch, age_first, act_steps, ..., streams side by side) |
 | 3 | **Data quality: watch version** (Cells 6c, 8b, 11d; person level, no model) | `device_missing_by_cohort`, `device_tests`, `device_missing_vs_reference`, `device_missing_model`, `device_composition_by_cohort`, `device_composition_residuals`, `device_version_by_cohort`, `device_version_tests`, `device_switching_by_cohort` | `device_version_missing_and_composition`, `device_version_within_cohort` |
+| 2b | **Weekly rhythm of gap starts and gap ends** (Cell 11g; stage `weekday_rhythm`; own results folder `<results>/weekday/`): shared and personal weekday patterns, calendar routine against charging cycle (days since return), cohort differences; tests H1-H4 | `weekday_rhythm_tests`, `_profile`, `_summary`, `_shrinkage`, `_dsr_curve`, `_personal`, `_coefficients`, `_fits`, `_flow`, `_holidays`, descriptions `_crude`, `_gap_length`, `_dsr_cells`, `_dsr_by_device`, `_first_record_weekday`; `results_summary.md` | `weekday_rhythm_profile`, `weekday_rhythm_calendar_vs_cycle_<stream>`, `weekday_rhythm_personal_<stream>`, `weekday_rhythm_cohort`, `_cohort_level`, `weekday_rhythm_sensitivity_start` / `_end`, supplements `weekday_rhythm_gap_length`, `_dsr_counts_<stream>`, `_dsr_by_device` |
 | 3 | **Data quality: device version** (Cells 6c, 8b, 11d) | see the device row below | `device_version_missing_and_composition`, `device_version_within_cohort` |
 | 3 | **Data quality: wear time of the last day before a gap** (Cell 11f; heart-rate minutes recorded on day d, all streams, no model) | `wear_last_day_distribution`, `wear_last_day` (median / quartiles, share under 16 h and 20 h with a person-clustered 95% interval, days with no heart-rate record), `wear_last_day_contrast` (last day minus ordinary days, cluster-robust test, Holm over cohorts) | `wear_last_day` (ECDF, streams in panels, cohorts in colour, solid = last day, dashed = ordinary days) |
 | 4a | **Primary model: gap onset** (primary, model A inside it, model D, exploratory grid; Cells 12-14, 17) | `onset_coefficients` (every term), `onset_models`, `primary_test`, `onset_term_tests`, `vif`, `cohort_interaction`, `cohort_specific`, `risk_unadjusted`, `onset_deciles`, `onset_pre_gap_trajectory` | `onset_primary_forest`, `onset_forest_year_<stream>` + `onset_forest_other_<stream>` (all terms), `onset_deciles_<stream>`, `pre_gap_activity_observed_<stream>` (observed steps on the days before a gap, by gap length; only days followed by a gap), `risk_curve`, `cohort_forest`, `forest_gap_definition`, `gap_definition_all_terms_other_<stream>` + `_year_`, `exploratory_grid_effects_<stream>` |
@@ -115,7 +121,7 @@ people per cohort after the overlap rule (Cell 5; `cohort_overlap.tsv`) -> the u
 | 4c | **Gap-level model C: gap length** (Cell 15) | `model_C_gap_length`, `model_C_all_terms`, `model_C_predicted_probs` | `gap_length_probs`, `gapC_forest_<stream>` |
 | 4d | **MVPA before the gap as a covariate of models B and C** (Cell 15; units `B_back2_adj_mvpa`, `B_back2_adj_pre_mvpa`, `C_adj_mvpa`) | `gap_mvpa_effects` (MVPA effect with 95% CI, the main terms with and without MVPA, n, VIF); the MVPA fits are also in `model_B_post_gap_activity`, `model_C_gap_length`, `model_B_all_terms`, `model_C_all_terms` | `gapB_mvpa_effect_<stream>`, `gapC_mvpa_effect_<stream>` |
 | 5 | **Run-in analysis: wear in study days 15-42 and gaps later** (Cells 11c description, 18 primary models = without a run-in term / with the run-in and its interaction, 18b sensitivity = other forms; only days / gaps AFTER the run-in; H1 wear trait, H2 steps effect depends on run-in, H3 robustness) | `runin_flow`, `runin_distribution`, `runin_rate`, `runin_steps_by_group`, `runin_association`, `runin_onset_coefficients`, `runin_onset_models`, `runin_gapB` / `runin_gapC` (+ `_all_terms`), `runin_tests`, `runin_shape`, `runin_effect_by_missing`, `runin_primary_effect`, `runin_quality` | `runin_distribution`, `runin_rate_by_category` (H1), `runin_steps_by_group_<stream>` (H2), `runin_primary_effect` (H3), `runin_steps_by_missing_days` (H2 model), `runin_onset_all_terms_other_<stream>`, `runin_gapB_all_terms_<stream>`, `runin_gapC_all_terms_<stream>`, one GVIF figure per model `runin_gvif_<onset|model_B|model_C>_<stream>`; sensitivity (Cell 18b): `runin_sensitivity_primary_effect`, `runin_sensitivity_shape`, `runin_sensitivity_{onset,gapB,gapC}_all_terms_*` |
-| 6 | **Sensitivity analyses** (incl. the wear analyses `wear_ge16h` / `wear_ge20h`: predictors of day d on the rows whose day d has >= 16 / >= 20 h of heart-rate minutes, table `wear_filter_flow`; and the predictor-day check of models B and C: `gap_day_check`, `gapB_day_check_<stream>`, `gapC_day_check_<stream>`) incl. full-period standardization (Cell 16; for models B and C the `*_fullperiod` units of Cell 15) | `sensitivity`, `sensitivity_all_terms`, `sensitivity_collinearity`, `day_check`, `day_descriptive`, `day_pattern` | `forest_sensitivity`, `sensitivity_forest_<stream>`, `sensitivity_all_terms_other_<stream>`, and the predictor-day check (the primary model reads the last full day d - 1; sensitivity: the day right before the gap d): `day_check_<stream>`, `day_pattern_<stream>` |
+| 6 | **Sensitivity analyses** (incl. the wear analyses `wear_ge16h` / `wear_ge20h` / `wear_ge22h`: predictors of day d on the rows whose day d has >= 16 / >= 20 / >= 22 h of heart-rate minutes, table `wear_filter_flow`; and the predictor-day check of models B and C: `gap_day_check`, `gapB_day_check_<stream>`, `gapC_day_check_<stream>`) incl. full-period standardization (Cell 16; for models B and C the `*_fullperiod` units of Cell 15) | `sensitivity`, `sensitivity_all_terms`, `sensitivity_collinearity`, `day_check`, `day_descriptive`, `day_pattern` | `forest_sensitivity`, `sensitivity_forest_<stream>`, `sensitivity_all_terms_other_<stream>`, and the predictor-day check (the primary model reads the last full day d - 1; sensitivity: the day right before the gap d): `day_check_<stream>`, `day_pattern_<stream>` |
 | 7 | **Model diagnostics and integrated summary** (written by every model cell) | `model_collinearity` (GVIF of every model of the main analysis), `model_term_tests`, `onset_collinearity`, `gap_collinearity`, `unit_failures`, `checkpoint_status`, `unit_run_status`; `results_summary.md` | `collinearity_gvif_<model>_<stream>` (one figure per model) |
 
 `figures/figure_index.tsv` lists every figure present with its step, analysis, model and caption; `figures/figure_captions.md` has the captions;
@@ -127,6 +133,50 @@ The all-terms figures come in two parts: `..._year_...` = the calendar-year term
 **Settings that change results** (`cfg`, part of every checkpoint key): `standardization` (`method = "pre_gap"`, `baseline_min_n = 7`), `reference_cohort`,
 `runin` (`start` = 15, `end` = 42, `cat_breaks`, `deciles`, `epv_min`), the onset / gap-model settings as before. Results saved by an earlier
 version of the code (other standardization, other odds-ratio direction, other stored content) are recognised as stale and refitted once.
+
+## Another compliance group and its comparison (`pipeline/run_band.R`)
+
+`run_band.R` (notebook cells) repeats the pipeline for people whose compliance lies in **[50, 60)% in all three streams**, every other filter as in the baseline
+selection (>= 21 days and longest gap <= 14 days in each stream, CCI <= 10). The list is made by the `../selection` code from the wear metrics, persons and CCI of the
+full-pool selection (`result/selection/20261031`); nothing in the model code or in the selection code is changed. The two lists share no person (the script checks it).
+
+| | >= 70% run | 50-60% run |
+|---|---|---|
+| list | `result/selection/20261031/final_pid_base.txt` | `result/selection/<NEW_DATE>/final_pid_base50_60.txt` (+ `attrition_base50_60.tsv`, `cci.txt`) |
+| exports | `<bucket>/bq_exports/<owner>/20261031/` | `.../<NEW_DATE>/` (a new list needs a new date; `20261104`) |
+| day tables | `result/final_missing/L1` | `result/final_missing/L1/5060` |
+| results | `result/final_missing/results` | `result/final_missing/results/5060` |
+| comparison | `result/final_missing/results/compare_70_vs_5060/{tables,figures}` | |
+
+Stages run on the group: `missingness` and `temporal` (the tables the comparison reads), the **primary** onset model (`onset`, role `primary`), and the sensitivity
+analyses (including the wear analyses). The compliance check `selection_check` uses 50% as its lower limit for this run.
+
+**Comparison (Cell 8; reads the saved tables of the two runs, refits nothing).** Figures: `compare_primary_effect` (the primary term per stream, both groups in
+colour), `compare_sensitivity` (every sensitivity analysis of both groups), `compare_missing_pct`, `compare_longest_gap`, `compare_gaps_per_person`,
+`compare_gap_length_distribution`, `compare_transition`. Statistics are in tables outside the plots: `compare_primary` (estimate, SE, OR and size of each
+model), `compare_primary_ratio` (the ratio of the two odds ratios, second group relative to the first, with a 95% interval: the groups are different people, so the
+two estimates are independent, log ratio = b2 - b1, SE = sqrt(se1^2 + se2^2); no p-value), `compare_within_sd`, `compare_sensitivity`, `compare_missingness`.
+Each estimate is **per +1 SD of its own model** (every run standardizes with its own pooled within-person SD of log(1 + steps)); the two SDs are in
+`compare_within_sd` and in the figure caption, so a ratio of 1 means equal odds per own SD, not necessarily per the same number of steps. The missingness figures are
+descriptive: the % of days missing differs by design, because compliance defines the groups. The two groups also differ in who they are (age, cohort mix, CCI,
+device), so a difference is an association between the groups, not an effect of compliance.
+
+## Weekly rhythm of gap starts and gap ends (stage `weekday_rhythm`, Cell 11g)
+
+Does the watch come off (gap start) or go back on (gap end, return) on particular weekdays; is that a shared calendar routine or a charging cycle (days since return); does it differ between people and cohorts?
+Run it with its **own results folder** so that nothing of the other analyses is touched:
+`run_missingness_pipeline(day_tables, persons, cfg, file.path(OUT_DIR, "weekday"), stages = "weekday_rhythm", model_streams = c("activity", "sleep", "hr"))`.
+Each stream has about 16 fits (`S0-S5` gap starts, `E0, E1, E4` gap ends, and the sensitivity fits); every fit is a checkpointed unit, so a crashed run is simply repeated. Terms, rows, models, hypotheses H1-H4 (Holm within four families), effect sizes,
+figures and limits: `STATISTICS.md` 3b; the formulas: `MODEL_EQUATIONS.md` 6. Sleep is aligned to the night it started. **No result exists yet on real data** (simulation checks: `STATISTICS.md` section 13, `pipeline/validate_weekday_rhythm.R`).
+
+Settings (`cfg$weekday_rhythm`; they do not enter the keys of any other analysis; each weekday unit carries them in its own key): `dsr_max = 21` (days since return levels 1-21, 22+), `days_so_far_max = 13`, `holiday_window = 1`,
+`n_profile_rows = 2000`, `n_re_draws = 100`, `n_beta_draws = 300`, `n_curve_draws = 100`, `n_person_draws = 10000`, `min_people = 20` (cells with 1-19 people are not shown), `min_cell_days = 200` (cells with fewer days at risk are drawn grey),
+`sleep_alignment = "night_start"` (`"as_stored"` switches the shift off).
+
+**Measured (simulated data, not real data).** One gap-start fit with the correlated personal rhythm (`S1`) on 918,961 rows, 2,600 people and 45,986 gap starts (about a quarter of the real size; this machine has 17 GB):
+**8.4 minutes** and a peak resident memory of **1.3 GB** for the worker (measured while other jobs ran on the same machine). Scaled linearly to the real size (about 3.5 million rows per stream) that is roughly half an hour and 5 GB per fit; the fits with days since return (21 extra
+coefficients) or weekday x cohort (18 extra) are larger, the scaling is probably worse than linear, and a fit that falls back to independent harmonics is fitted twice. About 16 fits per stream: **the total run time at full size was not measured** (expect hours per stream); every fit is
+checkpointed. The descriptions and the population-average predictions (about 20 seconds per fit with the default draws) are small next to the fits. The memory guard stops a fit that cannot fit in the free memory with a diagnosis; nothing is subsampled.
 
 ## Resources, memory, checkpoints and resuming
 
@@ -238,6 +288,8 @@ one at a time in a worker and are each checkpointed, but their total time (hours
 * The primary and model-D fits need about 10 GB each at full size. On a machine with less free memory the guard
   stops them with an explanation rather than subsampling; `cfg$model$sample_persons` is the documented, explicit
   alternative (same model, wider intervals, recorded in the checkpoint key).
+* The weekly-rhythm fits have a personal weekly rhythm (random slopes), are slower and larger than the primary model, and the personal-rhythm quantities are model based (normal random effects) with BLUPs shrunk toward the shared rhythm;
+  the pattern was first seen in the >= 70% compliance group, so no independent confirmation exists yet (planned: the 50-60% group).
 * `ordinal::clmm` is single-threaded and is the slowest model (minutes per model with sparse matrices, `ordinal_sparse`);
   when its random-intercept variance is on the boundary the cluster-bootstrap fallback of the model without the random
   effect is used (status `ok_bootstrap_se`).
@@ -275,7 +327,7 @@ The number of people per overlap combination is written to `L1/cohort_overlap.ts
 | B | Is activity on the first full day back lower after longer gaps? | MNAR *plausibility* |
 | C | Does low prior-day activity predict a longer gap? (ordinal) | exploratory; only if proportional odds holds |
 | D | Same as primary with gaps >= 2, 3, 7 days | main secondary analysis |
-| Sensitivity | **full-observation-period standardization**, trailing baseline, partial wear, **last day with >= 16 / >= 20 h of heart-rate wear** (predictors of day d), first gap only, main-sleep-only, conditional logit, cluster-robust SEs, spline, random slope | same estimand, other assumptions |
+| Sensitivity | **full-observation-period standardization**, trailing baseline, partial wear, **last day with >= 16 / >= 20 / >= 22 h of heart-rate wear** (predictors of day d), first gap only, main-sleep-only, conditional logit, cluster-robust SEs, spline, random slope | same estimand, other assumptions |
 | Run-in | primary onset model, model B and model C on the days / gaps after the run-in, without and with the run-in terms and their interaction | H1 wear trait -> later gaps; H2 effect modification of steps; H3 robustness |
 | Diagnostics | generalized VIF of every term of every model; joint Wald tests of factor / spline terms | reported, no predictor is removed |
 

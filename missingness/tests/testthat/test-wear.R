@@ -57,7 +57,7 @@ test_that("wear_min keeps exactly the rows whose own day d has enough heart-rate
   cols <- c(paste0("w_", all_preds), paste0("b_", all_preds)); adj <- c("age10", "sex2", "cohort")
   cc <- complete.cases(rs[, c(cols, adj), with = FALSE])
   dd <- build_onset_data(b, spec, cfg, list(day = "day_before_gap"))
-  for (h in c(16, 20)) {
+  for (h in c(16, 20, 22)) {
     w <- build_onset_data(b, spec, cfg, list(day = "day_before_gap", wear_min = h * 60, keep_wear = TRUE))
     ex <- rs[cc & (wear_min >= h * 60) %in% TRUE]
     expect_equal(nrow(w), nrow(ex)); expect_equal(w$w_act_steps, ex$w_act_steps)       # day d's predictors, the usual of the primary model
@@ -93,7 +93,7 @@ test_that("the wear stage writes the distribution, summary, contrast tables and 
   expect_true(all(file.exists(file.path(out, "tables", c("wear_last_day_distribution.tsv", "wear_last_day.tsv", "wear_last_day_contrast.tsv")))))
   expect_true(file.exists(file.path(out, "figures", "wear_last_day.png")))
   expect_setequal(unique(r$wear_last_day$stream), c("activity", "sleep", "hr"))
-  expect_setequal(unique(r$wear_last_day_contrast$quantity), c("% of days under 16 h", "% of days under 20 h", "mean wear (hours)"))
+  expect_setequal(unique(r$wear_last_day_contrast$quantity), c("% of days under 16 h", "% of days under 20 h", "% of days under 22 h", "mean wear (hours)"))
   ix <- fread(file.path(out, "figures", "figure_index.tsv")); expect_equal(ix[figure == "wear_last_day.png", step], 3L)
   expect_false(is.na(caption_for("wear_last_day")))
 })

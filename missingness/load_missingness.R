@@ -5,8 +5,8 @@
 # ==============================================================================
 load_missingness <- function(root = ".") {
   files <- c("utils", "config", "io", "etl", "persons", "covariates", "gaps", "predictors",
-             "device", "outcome_variables", "collinearity", "onset_model", "sensitivity", "gap_models", "runin", "wear", "summarise", "temporal",
-             "descriptive", "plots", "plots_effects", "report", "bq_export", "simulate", "pipeline")
+             "device", "outcome_variables", "collinearity", "onset_model", "sensitivity", "gap_models", "runin", "wear", "weekday_rhythm", "summarise", "temporal",
+             "descriptive", "plots", "plots_effects", "plots_weekday_rhythm", "report", "bq_export", "simulate", "pipeline")
   for (f in files) source(file.path(root, "R", paste0(f, ".R")), chdir = FALSE)
   invisible(files)
 }

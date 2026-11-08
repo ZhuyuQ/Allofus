@@ -67,6 +67,7 @@ show_figure <- function(outdir, name) {
 # (the exploratory specifications are listed with the primary models, step 4). Returns data.table(step, analysis, model).
 figure_analysis <- function(name) {
   rules <- list(
+    c("^weekday_rhythm",                       "2", "Temporal patterns: weekly rhythm of gap starts and gap ends", "gap start / gap end (weekday, days since return, personal rhythm, cohort)"),
     c("^device_",                              "3", "Data quality: device version",            "device version (descriptive, person level)"),
     c("^wear_last_day",                        "3", "Data quality: wear time of the last day", "heart-rate minutes recorded on the last day before a gap (descriptive, day level)"),
     c("^outcome_by_variable",                  "1", "Descriptive statistics: outcome by model variable", "descriptive (person level)"),
@@ -87,6 +88,7 @@ table_analysis <- function(name) {
   rules <- list(
     c("^runin_",                                               "5", "Run-in analysis: wear in the first days and later gaps"),
     c("collinearity|term_tests|^unit_|^checkpoint_|failures",  "7", "Model diagnostics and run status"),
+    c("^weekday_rhythm",                                       "2", "Temporal patterns: weekly rhythm of gap starts and gap ends"),
     c("^device_",                                              "3", "Data quality: device version"),
     c("^wear_last_day",                                        "3", "Data quality: wear time of the last day"),
     c("^outcome_variable",                                     "1", "Descriptive statistics: outcome by model variable"),

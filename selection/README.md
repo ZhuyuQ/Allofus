@@ -92,6 +92,12 @@ get the age points only. The score depends on the cohort because the conditions 
 once; Cell 8 for another band reuses `wear` and `cci`. The export of Cell 9 skips folders that exist, so a failed run can be repeated; **a different
 person list needs a new `EXPORT_DATE`** (otherwise the old exports are reused), and the missingness ETL then runs with the same date, `FINAL_PID` and `CCI_FILE`.
 
+## Another compliance band for the pipeline
+
+`missingness/pipeline/run_band.R` Cell 2 applies a new band (for example 50-60%) with `sel_select(wear, cci, pool, comp_min = 50, comp_max = 60)` to the files of this
+selection (`wear_metrics.tsv`, `persons.tsv`, `cci.txt`), without BigQuery, and writes `final_pid_base50_60.txt`, `attrition_base50_60.tsv` and a copy of `cci.txt` to a folder with a new export date.
+The band list cannot overlap with the baseline list (a person's compliance is one number per stream); the script stops if it does.
+
 ## Summary tables and Venn diagram (Cell 10, `summary_tables.R`)
 
 Computed from the selection's own files (`final_pid_<tag>.txt`, `persons.tsv`, `cci.txt`, `wear_metrics.tsv`) plus one query of the person table (race,
