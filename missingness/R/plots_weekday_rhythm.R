@@ -20,6 +20,9 @@ wr_label <- function(d) {
 
 wr_theme <- function() theme_bw(base_size = 10) + theme(strip.text = element_text(face = "bold"), legend.position = "bottom", axis.text.x = element_text(angle = 0))
 
+# The fill scale and label of an interval layer: only the "box" style draws a fill; the other styles map colour only (a fill scale would raise warnings).
+wr_fill_layers <- function(style, scale, name) if (identical(style, "box")) list(scale, labs(fill = name)) else NULL
+
 # P-value text for a test row.
 wr_ptext <- function(p) ifelse(is.na(p), "NA", ifelse(p < 1e-4, "< 0.0001", sprintf("%.4f", p)))
 
@@ -38,7 +41,7 @@ plot_wr_profile <- function(profile, summ, tests, crude, cfg) {
     interval_layer(style, horizontal = FALSE, color_var = "outcome", width = 0.4) +
     geom_text(data = s, aes(x = 1, y = Inf, label = label), hjust = 0, vjust = 1.1, size = 2.8, inherit.aes = FALSE) +
     facet_grid(outcome ~ stream, scales = "free_y") +
-    scale_color_manual(values = WR_COLORS, guide = "none") + scale_fill_manual(values = WR_COLORS, guide = "none") +
+    scale_color_manual(values = WR_COLORS, guide = "none") + wr_fill_layers(style, scale_fill_manual(values = WR_COLORS, guide = "none"), NULL) +
     labs(title = "Weekly Rhythm of Gap Starts and Gap Ends", x = NULL, y = "Predicted % (population average)", caption = interval_caption(style)) + wr_theme()
 }
 
@@ -113,14 +116,15 @@ plot_wr_cohort <- function(profile, tests, cfg, level = FALSE) {
   d <- wr_label(profile[fit_id %in% c("S4", "E4") & !is.na(cohort)])[, outcome := fifelse(fit_id == "S4", "gap start", "gap end")]
   est <- if (level) "pct" else "ratio_to_average_day"; lo <- if (level) "pct_low" else "ratio_low"; hi <- if (level) "pct_high" else "ratio_high"
   d[, cohort := factor(cohort, levels = cfg$cohorts)]
+  d <- d[drawable_interval(d, est, lo, hi, log = !level)]
   add_interval_columns(d, est, lo, hi, log = !level, style = style)
   lab <- merge(unique(d[, .(stream, outcome)]), tests[id %in% c("H4s", "H4e"), .(stream = factor(WR_STREAMS[stream], levels = WR_STREAMS), outcome, p_holm)], by = c("stream", "outcome"), all.x = TRUE)
   p <- ggplot(d, aes(weekday, est_, color = cohort, group = cohort)) + WR_SHADE + geom_line(position = position_dodge(0.5), alpha = 0.6) +
     interval_layer(style, horizontal = FALSE, color_var = "cohort", position = position_dodge(0.5)) +
     geom_text(data = lab, aes(x = 1, y = Inf, label = paste("H4 Holm p", wr_ptext(p_holm))), hjust = 0, vjust = 1.2, size = 2.8, inherit.aes = FALSE) +
-    facet_grid(outcome ~ stream, scales = "free_y") + scale_color_manual(values = cfg$palette$cohort) + scale_fill_manual(values = cfg$palette$cohort) +
+    facet_grid(outcome ~ stream, scales = "free_y") + scale_color_manual(values = cfg$palette$cohort) + wr_fill_layers(style, scale_fill_manual(values = cfg$palette$cohort), "Cohort") +
     labs(title = if (level) "Weekly Rhythm by Cohort (Level)" else "Weekly Rhythm by Cohort (Shape)", x = NULL,
-         y = if (level) "Predicted % (population average)" else "Ratio to the cohort's own average day", color = "Cohort", fill = "Cohort", caption = interval_caption(style)) + wr_theme()
+         y = if (level) "Predicted % (population average)" else "Ratio to the cohort's own average day", color = "Cohort", caption = interval_caption(style)) + wr_theme()
   if (!level) p <- p + scale_y_log10() + geom_hline(yintercept = 1, linetype = "dashed", color = "grey40")
   p
 }
@@ -131,12 +135,13 @@ plot_wr_sensitivity <- function(profile, outcome = c("start", "end"), cfg) {
   ids <- if (outcome == "start") c(main = "S1", holidays = "S1_holidays", before_first_gap = "S1_before_first_gap", activity_same_rows = "S1_activity_same_rows", activity = "S1_activity")
          else c(main = "E1", holidays = "E1_holidays")
   d <- wr_label(profile[fit_id %in% ids])[, analysis := factor(names(ids)[match(fit_id, ids)], levels = rev(names(ids)))]
+  d <- d[drawable_interval(d, "ratio_to_average_day", "ratio_low", "ratio_high", log = TRUE)]
   add_interval_columns(d, "ratio_to_average_day", "ratio_low", "ratio_high", log = TRUE, style = style)
   ggplot(d, aes(est_, analysis, color = stream)) + geom_vline(xintercept = 1, linetype = "dashed", color = "grey40") +
     interval_layer(style, horizontal = TRUE, color_var = "stream", position = position_dodge(0.6), width = 0.4) +
-    facet_grid(. ~ weekday) + scale_x_log10(breaks = c(0.5, 1, 2)) + scale_color_brewer(palette = "Dark2") + scale_fill_brewer(palette = "Dark2") +
+    facet_grid(. ~ weekday) + scale_x_log10(breaks = c(0.5, 1, 2)) + scale_color_brewer(palette = "Dark2") + wr_fill_layers(style, scale_fill_brewer(palette = "Dark2"), "Stream") +
     labs(title = sprintf("Weekday Ratios Under Sensitivity Analyses (Gap %s)", if (outcome == "start") "Starts" else "Ends"), x = "Ratio to the average day (log scale)", y = NULL,
-         color = "Stream", fill = "Stream", caption = interval_caption(style)) + wr_theme()
+         color = "Stream", caption = interval_caption(style)) + wr_theme()
 }
 
 # Supplement: share of gaps of each length by start weekday (rows add to 100%), one panel per stream.

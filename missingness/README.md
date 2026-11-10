@@ -173,10 +173,10 @@ Settings (`cfg$weekday_rhythm`; they do not enter the keys of any other analysis
 `n_profile_rows = 2000`, `n_re_draws = 100`, `n_beta_draws = 300`, `n_curve_draws = 100`, `n_person_draws = 10000`, `min_people = 20` (cells with 1-19 people are not shown), `min_cell_days = 200` (cells with fewer days at risk are drawn grey),
 `sleep_alignment = "night_start"` (`"as_stored"` switches the shift off).
 
-**Measured (simulated data, not real data).** One gap-start fit with the correlated personal rhythm (`S1`) on 918,961 rows, 2,600 people and 45,986 gap starts (about a quarter of the real size; this machine has 17 GB):
-**8.4 minutes** and a peak resident memory of **1.3 GB** for the worker (measured while other jobs ran on the same machine). Scaled linearly to the real size (about 3.5 million rows per stream) that is roughly half an hour and 5 GB per fit; the fits with days since return (21 extra
-coefficients) or weekday x cohort (18 extra) are larger, the scaling is probably worse than linear, and a fit that falls back to independent harmonics is fitted twice. About 16 fits per stream: **the total run time at full size was not measured** (expect hours per stream); every fit is
-checkpointed. The descriptions and the population-average predictions (about 20 seconds per fit with the default draws) are small next to the fits. The memory guard stops a fit that cannot fit in the free memory with a diagnosis; nothing is subsampled.
+**Measured run time.** *Simulated data:* one gap-start fit with the correlated personal rhythm (`S1`) on 918,961 rows took 8.4 minutes and 1.3 GB (resident memory of the worker). *Real data, activity stream of the >= 70% group (first run on the Workbench, 24-26 GB free; the session never used more than 3.9 GB):*
+all 16 fits and the descriptions finished with no failed unit in about **18 h 20 min** (the log times: `S1` 2 h 52 min, `S0` 30 min, `S2` 52 min, `S3` 4 h 4 min, `S4` 4 h 0 min, `S5` 4 min, the gap-end fits `E1`, `E0`, `E4` 1-2 min each because there are only about as many gap-end rows as missing days,
+`S1_holidays` 41 min, `S3_holidays` 54 min, `S1_before_first_gap` 43 min, `S3_before_first_gap` 1 h 10 min, `S1_activity_same_rows` 1 h 31 min, `S1_activity` 54 min). The linear scaling of the simulation (about half an hour for `S1`) was too optimistic: expect several hours for each fit with days since return or
+weekday x cohort. The sleep and heart-rate streams were not timed; plan on a day or more each. Every fit is checkpointed, so the stage can be stopped and resumed.
 
 ## Resources, memory, checkpoints and resuming
 
