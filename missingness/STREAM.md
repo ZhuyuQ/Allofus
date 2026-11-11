@@ -57,6 +57,17 @@ Cell 4 of `pipeline/run_stream.R` runs Parts A-C and the minutes check of Part G
 * **Date check** (Part C): the unexpected combinations other than "activity + sleep, heart rate missing" must be at most **1%** of analysed days, and the best date shift of sleep and of heart rate must be 0. A best shift of +1 means the table is one day late, -1 one day early (local date against UTC). `stream_date_check` shows the share for each shift.
 * **Minutes check** (Part G): at most **0.1%** of heart-rate records may have minutes above the length of the day (1,440; 1,500 where clocks go back). The 0.1% is my choice for "almost zero" (`minutes_exceed_max`). If it fails, the heart-rate zones were combined incorrectly in the data preparation and heart-rate minutes cannot be used as a wear measure until this is fixed.
 
+## If the minutes check fails
+
+The gate stops Cell 4 and says which check failed. For the minutes check: Cell 4b (read-only) shows how far above the length of the day the records are (a ratio near 2 means rows counted twice), how concentrated they are in people and years, and, from the raw heart-rate export,
+the share above the length of the day under three ways of combining the rows of a zone: sum of all rows (what the ETL does), drop exact duplicate rows then sum, largest row of each zone then sum. If one rule brings the share to about zero, Cell 4c uses those minutes **in this analysis only**
+(`st_use_hr_minutes`: it redoes the activity filter, the presence flags and the removal reasons) and Cell 4 is run again. The L1 tables and the other analyses are not changed: their heart-rate minutes (for example the wear thresholds of the weekday analysis) would still contain the problem,
+which is a reason to fix the ETL (`standardize_hr`) and rebuild L1 if the cause is the summing of repeated rows. Shares are clipped to 0-100%.
+
+**Option 2 (Cell 4c): the raw minutes themselves are a little above the day.** If Cell 4b shows no duplicated zone rows (all three rules give the same share) and ratios of 1.0-1.1, the cause is not the ETL: a calendar day can be longer than 24 hours (travel across time zones,
+daylight-saving dates outside the US rule used here). Then `minutes_tolerance = 0.1` accepts records up to 10% above the length of the day (about 26-27 hours) in the check, and `cap_hr_minutes = TRUE` caps the heart-rate wear of Parts F and G at the length of the day.
+Records further above still count against the 0.1% limit. This is a judgement about the gate, made after looking at the data; state it in the Methods when it is used.
+
 ## Decisions to check
 
 1. The list of device versions without heart rate (`stream_device_hr_lookup`); unlisted versions are assumed to measure heart rate.
@@ -73,3 +84,33 @@ Cell 4 of `pipeline/run_stream.R` runs Parts A-C and the minutes check of Part G
 
 Only descriptive; dates as stored; the time zone and the device in use on a day are inferred (as-of join of record dates); state 3 mixes a watch that was moved but not worn, steps counted by a phone, and a watch worn with heart rate switched off (Part D separates them by the person's own steps
 and MVPA but cannot prove which); "probably worn" nights are likely, not proven; shares are unadjusted. Not run on real data yet. Tests use hand-counted data and simulated data (`tests/testthat/test-stream.R`).
+
+# Stream model: does a high-step day d predict the status of day d + 1?
+
+Code: `R/stream_model.R`, `R/plots_stream_model.R`; run: Cells 7-11 of `pipeline/run_stream.R`; tests: `tests/testthat/test-stream-model.R`. Output: `<results>/stream/model/` (`tables/stream_model_*.tsv`, `figures/`).
+
+**Hypotheses.** H1 (primary, two-sided Wald test): more steps than usual on day d change the odds that d + 1 is **all missing** (expected OR < 1). H2: this association differs between all missing and activity only, and between all missing and sleep not logged.
+H3 (negative control): steps are not associated with category 4, which cannot arise from non-wear.
+
+**Time order.** Exposure = steps of calendar day d; outcome = the status of day d + 1 (the sleep ending on d + 1 usually starts on the evening of d: the 20-hour wear rule limits any overlap to at most 4 hours). Day d was chosen as the exposure day because the earlier per-stream analyses found the association concentrated on the last day.
+
+**Risk set.** One row per person-day d with activity, heart rate and a main sleep record on d (fully recorded), at least 20 hours of heart-rate wear on d (sum of the zone minutes), and at least 7 earlier days that met both conditions. Days removed in the stream-state analysis are not days; rows whose d + 1 is an excluded day or that are the last day of the window are dropped and counted (`flow`).
+
+**Outcome (d + 1).** 0 fully recorded (reference) | 1 all missing (main outcome) | 2 activity only | 3 sleep not logged (mixes nights without wear, nights worn but not detected, and dates with no sleep ending) | 4 any other pattern (activity + sleep without heart rate, sleep only, heart rate without activity; negative control; its composition is in `category4_composition`).
+
+**Exposure and covariates (the onset model's settings).** x = log(1 + steps) on d; the person's usual m = the mean of x over their **earlier** qualifying days only (no future days); w = (x - m)/SD within, b = (m - mean)/SD between; the constants are taken over all risk-set rows.
+Covariates: cohort, age, sex, CCI score (and a missing indicator), device family, weekday of d + 1, recording history (length of the last spell, any earlier spell, days since the last return), a natural spline of the day of follow-up. No calendar year.
+
+**Model A.** One mixed logistic model per category (k against 0, random person intercept, the onset model's engine settings): subject-specific odds ratios per +1 SD of w. H1 = Wald test for category 1 (unadjusted). Equivalence for categories 2-4: two one-sided tests, 90% interval within 0.97-1.03; the Holm adjustment over the three is added (`p_tost_holm`), the unadjusted p is kept.
+Negative-control verdict (`negative_control`): pass = 90% interval within the margin with at least 6,000 events; fail = the whole 90% interval outside the margin (main result possibly confounded); otherwise inconclusive.
+**Model B.** One multinomial logit (reference 0, all rows) fitted by Newton-Raphson with person-clustered (sandwich) errors. H2 = the difference of the w coefficients of categories 1 and 2 and of 1 and 3 (ratio of odds ratios; Holm over the two, unadjusted p kept). Predicted probabilities (all five statuses) across w from -2 to +2 average the observed covariates; intervals from 2,000 draws of the coefficients with their cluster covariance.
+
+**Absolute risk, two ways.** Model B (population-averaged) and model A (the random intercept integrated out on a quantile grid). Both give the probability across w and the risk difference between +1 and -1 SD with an interval (`risk_diff`).
+
+**Event thresholds.** An effect claim needs at least 1,500 events of the category, an equivalence claim at least 6,000 (`event_counts`; look at it before the models). Cohort-specific fits are run only for cohorts with at least 1,500 all-missing events.
+
+**Sensitivity.** More than 16 h and more than 22 h of heart-rate wear on d (the baseline days use the same rule), first 14 days excluded, first transition per person only, conditional logistic regression for category 1 (`checks_clogit`), lme4 against glmmTMB on a seeded subsample (`checks_engine`), and category 3 split into "probably worn" and "probably not worn" at 20/22 h on both days.
+
+**Figures.** `stream_model_events`, `_observed_deciles`, `_forest` (odds ratios with the 0.97-1.03 band and the multinomial contrasts), `_absolute_risk` (models A and B), `_mix_by_steps` (stacked), `_sensitivity`.
+
+**Limits.** Associations, not causes; subject-specific (A) and population-averaged (B) odds ratios differ by construction; category 3 is a mixture; a low-step evening can be the start of removing the watch (the wear rule and the 22 h variant address this partly).

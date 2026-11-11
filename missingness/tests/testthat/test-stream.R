@@ -140,3 +140,32 @@ test_that("a simulated study: the removed days add up and every figure builds", 
   expect_false(any(grepl("person_share|steps_data|day_sample|nights|hr_hours|night_habit_persons", list.files(file.path(d, "tables")))))     # person-level data never written
   expect_true(file.exists(file.path(d, "figures", "stream_a_flow.png")))
 })
+
+test_that("the minutes check: rows counted twice are found, and the corrected minutes pass the gate", {
+  z <- c("out_of_range", "fat_burn", "cardio", "peak")
+  mk <- function(date, mins, dup = character()) { r <- data.table(person_id = 1L, date = as.character(date), zone_name = c("Out of Range", "Fat Burn", "Cardio", "Peak"), min_heart_rate = 30, max_heart_rate = 200, minute_in_zone = mins, calorie_count = 1)
+                                                  rbind(r, r[zone_name %in% dup])[] }
+  raw <- rbind(mk(d0, c(1000, 300, 100, 40), dup = c("Out of Range", "Fat Burn")), mk(d0 + 1, c(1000, 300, 100, 40)))           # day 1: two zones appear twice
+  t <- st_hr_raw_totals(raw, z)
+  expect_equal(t[date == d0, c(t_sum, t_distinct, t_max, dup_keys)], c(2740, 1440, 1440, 2)); expect_equal(t[date == d0 + 1, c(t_sum, t_distinct, t_max, dup_keys)], c(1440, 1440, 1440, 0))
+  chk <- st_hr_raw_check(t)
+  expect_equal(chk$n_above, c(1L, 0L, 0L)); expect_equal(chk$person_days_with_duplicated_zone_rows, rep(1L, 3L))
+  # the person-day table: the inflated minutes fail the check, the corrected ones pass
+  cfg <- cfg_test(); st <- modifyList(st_config(), list(min_people = 1L))
+  D <- data.table(person_id = 1L, cohort = factor("Healthy"), date = d0 + 0:1, hr_row = TRUE, hr_min = c(2740, 1440), day_max = 1440L, act_row = TRUE, sedentary_minutes = 600, steps = 1000,
+                  lightly_active_minutes = 100, fairly_active_minutes = 0, very_active_minutes = 0, slp_row = TRUE, has_main_sleep = TRUE, act_active = TRUE, slp_active = TRUE, hr_active = TRUE,
+                  dev_version = "Versa 3", dev_hr = TRUE, usual_hr = TRUE)
+  expect_equal(st_minutes_check(D, st)$overall$n_events, 1L); expect_equal(st_minutes_diagnosis(D)$by_ratio[ratio_bin == "1.9-2.1", n_records], 1L)
+  D2 <- st_use_hr_minutes(copy(D), t, "t_distinct", st)
+  expect_equal(D2$hr_min, c(1440, 1440)); expect_equal(st_minutes_check(D2, st)$overall$n_events, 0L)
+})
+
+test_that("the minutes tolerance and the cap: days longer than 24 hours are accepted up to the tolerance and the wear is capped at the length of the day", {
+  cfg <- cfg_test(); st <- st_config()
+  D <- data.table(person_id = 1:3, cohort = factor("Healthy"), date = d0, hr_row = TRUE, hr_min = c(1500, 1700, 1000), act_row = TRUE, sedentary_minutes = 600, steps = 100, lightly_active_minutes = 10,
+                  fairly_active_minutes = 0, very_active_minutes = 0, slp_row = TRUE, has_main_sleep = TRUE)
+  D1 <- st_flags(copy(D), st); expect_equal(D1$hr_wear_min, D$hr_min)                                                     # no cap by default
+  D2 <- st_flags(copy(D), modifyList(st, list(cap_hr_minutes = TRUE))); expect_equal(D2$hr_wear_min, c(1440, 1440, 1000)) # capped at the length of the day
+  m0 <- st_minutes_check(D1, modifyList(st, list(min_people = 1L))); m1 <- st_minutes_check(D1, modifyList(st, list(min_people = 1L, minutes_tolerance = 0.1)))
+  expect_equal(m0$overall$n_events, 2L); expect_equal(m1$overall$n_events, 1L)                                             # 1,500 is within 10% of 1,440; 1,700 is not
+})

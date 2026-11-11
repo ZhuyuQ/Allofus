@@ -40,6 +40,8 @@ st_config <- function(overrides = list()) {
               min_worn_days_habit = 30L, min_days_compare = 3L, min_people = 20L,
               hr_cuts_present = c(10, 20), probably_worn_cuts = c(20, 22),
               unexpected_max_share = 0.01, minutes_exceed_max = 0.001,
+              minutes_tolerance = 0,                 # a heart-rate record counts as 'above the length of the day' only above (1 + tolerance) x the length (0.1 allows days of about 26-27 h: travel across time zones)
+              cap_hr_minutes = FALSE,                # TRUE: the heart-rate wear of Parts F and G is the minutes capped at the length of the day
               sample_people = 25L, day_plot_max = 365L)
   utils::modifyList(cfg, overrides)
 }
@@ -148,6 +150,7 @@ st_flags <- function(D, cfg) {
   set(D, j = "act_after", value = D$act_row & !D$act_filtered)
   set(D, j = "sleep_main", value = D$slp_row & D$has_main_sleep %in% TRUE)
   set(D, j = c("day_min", "day_max"), value = list(dm$min, dm$max))
+  set(D, j = "hr_wear_min", value = if (isTRUE(cfg$cap_hr_minutes)) pmin(D$hr_min, dm$max) else D$hr_min)
   D[]
 }
 
@@ -187,7 +190,7 @@ st_build_days <- function(store, persons, trackers, cfg, pipeline_cfg) {
 st_share_by <- function(dt, y, by = "cohort") {
   col <- y
   dt[, { ci <- cluster_mean_ci(as.numeric(get(col)), person_id)
-         .(n_days = .N, n_events = sum(get(col)), n_people = ci$n_persons, share_pct = 100 * ci$mean, low = 100 * ci$lo, high = 100 * ci$hi) }, by = by]
+         .(n_days = .N, n_events = sum(get(col)), n_people = ci$n_persons, share_pct = 100 * ci$mean, low = pmax(0, 100 * ci$lo), high = pmin(100, 100 * ci$hi)) }, by = by]       # a share cannot leave 0-100%
 }
 
 # The same for several indicator columns: specs = c(label = column).
@@ -290,7 +293,7 @@ st_date_check <- function(D, cfg) {
 
 # Check of the minutes: share of heart-rate records whose minutes exceed the length of the day (1,440; 1,500 where clocks go back).
 st_minutes_check <- function(D, cfg) {
-  H <- D[hr_row == TRUE & !is.na(hr_min), .(person_id, cohort, exceed = hr_min > day_max)]
+  H <- D[hr_row == TRUE & !is.na(hr_min), .(person_id, cohort, exceed = hr_min > day_max * (1 + cfg$minutes_tolerance))]
   list(by_cohort = st_suppress(st_share_by(H, "exceed"), ST_VALUE_COLS, cfg), overall = st_share_by(H[, .(person_id, cohort = "all", exceed)], "exceed"))
 }
 
@@ -376,7 +379,7 @@ st_day_sample <- function(D, cfg) {
 
 # Nights (state 4 and, for comparison, state 1) whose previous day was also a worn day, with the heart-rate hours of both days.
 st_nights <- function(D) {
-  X <- D[, .(person_id, cohort, state = fifelse(reason == "analysed", state, 0L), hr_min)]
+  X <- D[, .(person_id, cohort, state = fifelse(reason == "analysed", state, 0L), hr_min = if ("hr_wear_min" %in% names(D)) hr_wear_min else hr_min)]     # the wear minutes (capped if cap_hr_minutes)
   X[, `:=`(prev_state = shift(state), prev_hr = shift(hr_min)), by = person_id]
   X[state %in% c(1L, 4L) & prev_state %in% c(1L, 4L) & !is.na(hr_min) & !is.na(prev_hr),
     .(person_id, cohort, state, hr_prev = prev_hr / 60, hr_now = hr_min / 60)]
@@ -397,7 +400,7 @@ st_part_f <- function(D, cfg) {
 
 # Heart-rate wear on worn days (states 1 and 4): distribution and the share below each cut-off.
 st_part_g <- function(Dk, cfg) {
-  W <- Dk[state %in% c(1L, 4L) & !is.na(hr_min), .(person_id, cohort, hrh = hr_min / 60)]
+  W <- Dk[state %in% c(1L, 4L) & !is.na(hr_min), .(person_id, cohort, hrh = (if ("hr_wear_min" %in% names(Dk)) hr_wear_min else hr_min) / 60)]
   dist <- W[, c(.(n_days = .N, n_people = uniqueN(person_id)), as.list(st_quant(hrh, c(0.05, 0.1, 0.25, 0.5, 0.75, 0.95)))), by = cohort]
   below <- rbindlist(lapply(cfg$hr_cuts_present, function(ct) { W[, hit := hrh < ct]; cbind(cutoff_hours = ct, st_share_by(W, "hit")) }))
   list(distribution = st_suppress(dist, ST_VALUE_COLS, cfg), below = st_suppress(below, ST_VALUE_COLS, cfg), hours = W[, .(cohort, hrh)])
@@ -469,3 +472,50 @@ st_methods_text <- function(cfg) c(
   "**Heart rate switched off.** There is no separate rule for heart rate being switched off. The selection already required the longest heart-rate gap to be at most 14 days, so long switched-off periods were removed before this analysis.", "",
   "**Uncertainty.** Shares of days carry 95% intervals that account for repeated days of the same person (ratio estimator with people as clusters); averages of person-level values carry t intervals over people. No significance tests. Cells with 1-19 people are not shown. Dates are used as stored (local date versus UTC is checked in Part C). Cohort differences are unadjusted.", "",
   "**Gate.** Parts D-G run only if the unexpected combinations other than 'activity + sleep, heart rate missing' are at most 1% of days with the best date shift at 0, and at most 0.1% of heart-rate records have minutes above the length of the day. The steps of the previous day are never related to the states here.")
+
+# ---- the minutes check failed: diagnosis and a corrected heart-rate minutes table ----------------------------------------------------------------------
+
+# Heart-rate records above the length of the day (from the person-day table D): how far above (ratio to the day length), how concentrated in people, in which years.
+# A ratio near 2 points to rows counted twice; a ratio just above 1 to rounding; a few people to one device or one export problem.
+st_minutes_diagnosis <- function(D) {
+  H <- D[hr_row == TRUE & !is.na(hr_min) & hr_min > day_max, .(person_id, cohort, date, ratio = hr_min / day_max)]
+  if (!nrow(H)) return(list(by_ratio = data.table(), by_cohort = data.table(), concentration = data.table(), by_year = data.table()))
+  per <- H[, .N, by = person_id][order(-N)]
+  list(by_ratio = H[, .(n_records = .N), by = .(ratio_bin = cut(ratio, c(1, 1.1, 1.5, 1.9, 2.1, Inf), c("1.0-1.1", "1.1-1.5", "1.5-1.9", "1.9-2.1", "above 2.1")))][order(ratio_bin)],
+       by_cohort = H[, .(n_records = .N, n_people = uniqueN(person_id)), by = cohort],
+       concentration = per[, .(n_records = sum(N), n_people = .N, share_top10_people_pct = 100 * sum(head(N, 10L)) / sum(N), share_top100_people_pct = 100 * sum(head(N, 100L)) / sum(N))],
+       by_year = H[, .N, by = .(year = data.table::year(date))][order(year)])
+}
+
+# Per person-day heart-rate minutes from ONE raw heart-rate export (zone rows), under three ways of combining the rows of a zone:
+#   t_sum       sum of all rows (what the ETL does: a zone split across shards is summed)
+#   t_distinct  drop exact duplicate rows, then sum
+#   t_max       the largest row of each zone, then sum
+# dup_keys = the number of zones of the person-day with more than one row. zones: the zone names (slugs) of the four zones.
+st_hr_raw_totals <- function(raw, zones) {
+  d <- as.data.table(raw)[, .(person_id, date = as.Date(date), zone = zone_slug(zone_name), lo = if ("min_heart_rate" %in% names(raw)) min_heart_rate else NA_real_,
+                              hi = if ("max_heart_rate" %in% names(raw)) max_heart_rate else NA_real_, m = as.numeric(minute_in_zone),
+                              cal = if ("calorie_count" %in% names(raw)) calorie_count else NA_real_)][zone %in% zones & !is.na(date) & !is.na(m)]
+  tot <- function(z, nm) z[, .(t = sum(s)), by = .(person_id, date)][, setnames(.SD, "t", nm)]
+  z_sum <- d[, .(n = .N, s = sum(m)), by = .(person_id, date, zone)]
+  out <- tot(z_sum, "t_sum")
+  out <- merge(out, tot(unique(d)[, .(s = sum(m)), by = .(person_id, date, zone)], "t_distinct"), by = c("person_id", "date"))
+  out <- merge(out, tot(d[, .(s = max(m)), by = .(person_id, date, zone)], "t_max"), by = c("person_id", "date"))
+  merge(out, z_sum[, .(dup_keys = sum(n > 1L)), by = .(person_id, date)], by = c("person_id", "date"))[]
+}
+
+# Share of person-days above the length of the day under each way of combining the rows (totals: st_hr_raw_totals() of all cohorts).
+st_hr_raw_check <- function(totals) {
+  dm <- st_day_minutes(totals$date)$max
+  r <- c(`sum of all rows (what the ETL does)` = "t_sum", `drop exact duplicate rows, then sum` = "t_distinct", `largest row of each zone, then sum` = "t_max")
+  rbindlist(lapply(names(r), function(nm) data.table(rule = nm, n_person_days = nrow(totals), n_above = sum(totals[[r[[nm]]]] > dm),
+                                                     share_above_pct = 100 * mean(totals[[r[[nm]]]] > dm), person_days_with_duplicated_zone_rows = sum(totals$dup_keys > 0L))))
+}
+
+# Use a corrected heart-rate minutes table (rule = one of the t_ columns of st_hr_raw_totals) in the person-day table, and redo the activity filter, the presence flags and the
+# removal reasons that depend on it. The L1 tables and every other analysis are not touched.
+st_use_hr_minutes <- function(D, totals, rule, cfg) {
+  v <- totals[, .(person_id, date, new_min = get(rule))]
+  D[v, on = c("person_id", "date"), hr_min := i.new_min]
+  st_assign_reason(st_flags(D, cfg), cfg)
+}
