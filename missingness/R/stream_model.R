@@ -36,6 +36,9 @@ stm_config <- function(overrides = list()) {
 # One row per person-day with the day status, the qualifying-day flag, the usual level of the exposure (EARLIER qualifying days only) and the recording history; the status
 # and wear of the next row (d + 1) are attached. D: the person-day table of stream_states.R (reason assigned); naps: count naps as sleep.
 stm_days <- function(D, scfg, naps = FALSE) {
+  if (!is.data.table(D)) D <- as.data.table(D)
+  need <- c("person_id", "date", "reason", "act_after", "hr_present", "sleep_main", "steps", "dev_version")
+  if (length(miss <- setdiff(need, names(D)))) stop("the person-day table D lacks: ", paste(miss, collapse = ", "), " - run Cells 1-4 (and 4c if used) again so that D is the table of st_build_days()", call. = FALSE)
   X <- D[, .(person_id, date, analysed = reason == "analysed", a = act_after, h = hr_present, s = if (naps) slp_row else sleep_main, steps, dev_version,
              wear = if ("hr_wear_min" %in% names(D)) hr_wear_min else hr_min)]
   setorder(X, person_id, date)
@@ -258,11 +261,12 @@ stm_multi_risk <- function(fit, dat, scfg, seed) {
 # Model B: fit, coefficient table (all terms, cluster SE), H2 contrasts, probabilities.
 stm_fit_multinomial <- function(dat, pcfg, scfg, seed) {
   t0 <- Sys.time(); rhs <- stm_terms(dat)
+  n_all <- nrow(dat); dat <- dat[complete.cases(dat[, rhs, with = FALSE])]            # rows with a missing covariate are left out, as in the mixed models
   fit <- stm_multinom(dat, rhs, scfg$multinom_max_iter)
   se <- sqrt(diag(fit$V)); b <- as.vector(fit$beta)
   coef <- data.table(model = paste0("c", sub(":.*", "", rownames(fit$V))), term = sub("^[0-9]:", "", rownames(fit$V)), estimate = b, se = se, z = b / se, p = 2 * stats::pnorm(-abs(b / se)),
                      or = exp(b), or_low = exp(b - 1.96 * se), or_high = exp(b + 1.96 * se), or90_low = exp(b - stats::qnorm(0.95) * se), or90_high = exp(b + stats::qnorm(0.95) * se))
-  info <- data.table(model = "multinomial", n_rows = fit$n_rows, n_people = fit$n_people, n_events = sum(dat$outcome > 0L), status = if (fit$converged) "ok" else "not_converged",
+  info <- data.table(model = "multinomial", n_rows = fit$n_rows, n_rows_missing_covariate = n_all - fit$n_rows, n_people = fit$n_people, n_events = sum(dat$outcome > 0L), status = if (fit$converged) "ok" else "not_converged",
                      iterations = fit$iterations, loglik = fit$loglik, elapsed_sec = as.numeric(difftime(Sys.time(), t0, units = "secs")))
   c(list(info = info, coef = coef, contrasts = stm_contrasts(fit, list(c(1L, 2L), c(1L, 3L)))), stm_multi_risk(fit, dat, scfg, seed))
 }
@@ -278,10 +282,11 @@ stm_variant_rows <- function(R, variant, scfg) {
 
 # Conditional logistic regression stratified by person for category 1 (time-varying terms only).
 stm_clogit <- function(R, scfg) {
+  suppressPackageStartupMessages(library(survival))                    # clogit builds a coxph / strata call that is evaluated unqualified
   d <- R[outcome %in% c(0L, 1L)][, y := as.integer(outcome == 1L)]
   d <- d[person_id %in% d[y == 1L, unique(person_id)]]
   tv <- Filter(function(a) a %in% names(d) && uniqueN(d[[a]]) > 1L, c("w", "dow_next", "prev_spell_l", "any_prior_spell", "dsr_l", "ns1", "ns2", "ns3"))
-  fit <- survival::clogit(stats::as.formula(paste("y ~", paste(tv, collapse = " + "), "+ strata(person_id)")), data = d, method = "efron")
+  fit <- survival::clogit(stats::as.formula(paste("y ~", paste(tv, collapse = " + "), "+ survival::strata(person_id)")), data = d, method = "efron")
   cf <- summary(fit)$coefficients["w", ]
   data.table(model = "clogit_c1", n_rows = nrow(d), n_people = uniqueN(d$person_id), n_events = sum(d$y), estimate = cf[["coef"]], se = cf[["se(coef)"]], or = exp(cf[["coef"]]),
              or_low = exp(cf[["coef"]] - 1.96 * cf[["se(coef)"]]), or_high = exp(cf[["coef"]] + 1.96 * cf[["se(coef)"]]))
@@ -323,7 +328,7 @@ stm_run_models <- function(R, variant, pcfg, scfg, ckpt_dir, dkey, secondary = T
   })$value)
   names(out) <- vapply(stm_specs(secondary), `[[`, "", "id")
   if (multinomial) out$multinomial <- unit("multinomial", function() {
-    dat <- R[, c("outcome", "person_id", stm_terms(R)), with = FALSE]; wr_check_memory(nrow(dat), 120L, pcfg)
+    dat <- R[, c("outcome", "person_id", stm_terms(R)), with = FALSE]; wr_check_memory(nrow(dat), 60L, pcfg)     # design matrix (~30 columns) + the 4 x 5 working vectors per row; the guard's cell estimate is conservative
     isolated(pcfg, stm_fit_multinomial(dat, pcfg, scfg, scfg$seed + 100L))
   })$value
   out

@@ -67,6 +67,9 @@ test_that("the multinomial model equals nnet::multinom and its cluster covarianc
   S <- do.call(cbind, lapply(1:4, function(k) rowsum(X * (Y[, k] - P[, k]), dat$person_id)))
   bread <- unname(vcov(ref)[as.vector(outer(1:3, 0:3 * 3, `+`)), as.vector(outer(1:3, 0:3 * 3, `+`))])
   expect_equal(unname(fit$V), unname((g / (g - 1)) * bread %*% crossprod(S) %*% bread), tolerance = 1e-3)
+  d2 <- copy(dat)[, b := rnorm(.N)][, cohort := factor("a")][, age10 := fifelse(seq_len(.N) %% 50L == 0L, NA_real_, z)]                       # rows with a missing covariate are left out, not an error
+  fb <- stm_fit_multinomial(d2[, .(outcome, person_id, w, b, age10)], NULL, stm_config(list(n_profile_rows = 100L, n_beta_draws = 50L)), 1L)
+  expect_equal(fb$info$n_rows_missing_covariate, sum(is.na(d2$age10))); expect_equal(fb$info$n_rows + fb$info$n_rows_missing_covariate, n)
   ct <- stm_contrasts(fit, list(c(1L, 2L), c(1L, 3L))); expect_equal(ct$difference[1L], fit$beta["w", 1L] - fit$beta["w", 2L]); expect_equal(ct$p_holm, stats::p.adjust(ct$p, "holm"))
 })
 

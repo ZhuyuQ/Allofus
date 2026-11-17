@@ -42,7 +42,7 @@ st_config <- function(overrides = list()) {
               unexpected_max_share = 0.01, minutes_exceed_max = 0.001,
               minutes_tolerance = 0,                 # a heart-rate record counts as 'above the length of the day' only above (1 + tolerance) x the length (0.1 allows days of about 26-27 h: travel across time zones)
               cap_hr_minutes = FALSE,                # TRUE: the heart-rate wear of Parts F and G is the minutes capped at the length of the day
-              sample_people = 25L, day_plot_max = 365L)
+              sample_people = 50L, day_plot_max = 365L)
   utils::modifyList(cfg, overrides)
 }
 
@@ -367,12 +367,16 @@ st_night_habit <- function(Dk, cfg) {
   list(table = st_suppress(tab, ST_VALUE_COLS, cfg), persons = p)
 }
 
-# A seeded sample of people per cohort for the day-by-day picture (state 0 = day removed); never written to a table.
+# A seeded sample of people per cohort for the day-by-day picture; never written to a table. state 0 = day removed, `reason` says why it was removed. `row` numbers the people
+# WITHIN each cohort (1, 2, ...), ordered by their first analysed day, so each panel is a gap-free block and people who start late sit together.
 st_day_sample <- function(D, cfg) {
   ids <- D[, .(id = unique(person_id)), by = cohort][, .SD[with_seed(cfg$seed + as.integer(cohort[1L]), sample.int(.N, min(.N, cfg$sample_people)))], by = cohort]
-  s <- D[person_id %in% ids$id, .(cohort, person_id, date, state = fifelse(reason == "analysed", state, 0L))]
+  s <- D[person_id %in% ids$id, .(cohort, person_id, date, reason, state = fifelse(reason == "analysed", state, 0L))]
   s[, day := as.integer(date - min(date)) + 1L, by = person_id]
-  s[day <= cfg$day_plot_max][, row := .GRP, by = person_id][]
+  first <- s[reason == "analysed", .(first_ok = min(day)), by = person_id]
+  s <- first[s, on = "person_id"][is.na(first_ok), first_ok := .Machine$integer.max]
+  ord <- unique(s[, .(cohort, person_id, first_ok)])[order(cohort, first_ok, person_id)][, row := seq_len(.N), by = cohort]
+  ord[s[day <= cfg$day_plot_max], on = c("cohort", "person_id")][, first_ok := NULL][]
 }
 
 # ---- Part F: what 'night missing' contains ------------------------------------------------------------------------------------------------
@@ -440,7 +444,7 @@ st_write_tables <- function(tabs, outdir) {
 # Save figures as PNG (<outdir>/figures/<name>.png).
 st_save_figures <- function(figs, outdir, dpi = 150) {
   dir.create(file.path(outdir, "figures"), recursive = TRUE, showWarnings = FALSE)
-  size <- function(nm) switch(sub("^stream_([a-g]).*", "\\1", nm), a = c(9, 5), b = c(8, 6), c = c(11, 8), d = c(9, 6), e = c(11, 8), f = c(11, 8), g = c(8, 5), c(9, 6))
+  size <- function(nm) switch(sub("^stream_([a-g]).*", "\\1", nm), a = c(9, 5), b = c(8, 6), c = c(11, 8), d = c(9, 6), e = if (nm == "stream_e_day_by_day") c(11, 11) else c(11, 8), f = c(11, 8), g = c(8, 5), c(9, 6))
   for (nm in names(figs)) { sz <- size(nm); ggplot2::ggsave(file.path(outdir, "figures", paste0(nm, ".png")), figs[[nm]], width = sz[1], height = sz[2], dpi = dpi, bg = "white") }
   invisible(names(figs))
 }

@@ -6,6 +6,7 @@
 suppressPackageStartupMessages({ library(data.table); library(ggplot2) })
 
 ST_STATE_COLORS <- c(`All present` = "#2E8B57", `All missing` = "#7F7F7F", `Non-wear` = "#E69F00", `Night missing` = "#0072B2", Other = "#CC3311")
+ST_REMOVED_COLORS <- c(`removed: stream not active` = "#D9D2F0", `removed: device without heart rate` = "#F6D2A8", `removed: device unknown, removed` = "#F2B8B8")
 ST_REASON_COLORS <- c(`analysed days` = "#2E8B57", `stream not active` = "#999999", `device without heart rate` = "#E69F00", `device unknown, removed` = "#CC3311")
 
 st_theme <- function() theme_bw(base_size = 10) + theme(strip.text = element_text(face = "bold"), legend.position = "bottom")
@@ -98,13 +99,15 @@ plot_st_composition <- function(comp, by, pcfg) {
   if (by == "all") p + facet_wrap(~weighting) else p + facet_grid(level ~ weighting, scales = "free_x")
 }
 
-# Day-by-day states of a random sample of people per cohort (one row per person; grey = day removed).
+# Day-by-day states of a random sample of people per cohort (one row per person, ordered by the first analysed day). Removed days are drawn in pale colours by reason, so they are visible.
 plot_st_day_by_day <- function(s, pcfg) {
-  d <- st_cohorts(s, pcfg)[, state_label := factor(fifelse(state == 0L, "removed", ST_STATE_LABELS[as.character(state)]), levels = c("removed", ST_STATE_LABELS))]
-  ggplot(d, aes(day, row, fill = state_label)) + geom_raster() + facet_grid(cohort ~ ., scales = "free_y", space = "free_y") +
-    scale_fill_manual(values = c(removed = "white", ST_STATE_COLORS), drop = FALSE) + scale_y_reverse() +
-    labs(title = "Part E. Day-by-Day States of a Random Sample of People", x = "Day since the start of the window", y = "People (one row each)", fill = NULL,
-         caption = "Individual-level picture: check the disclosure rules before it leaves the workspace.") + st_theme() + theme(axis.text.y = element_blank(), axis.ticks.y = element_blank())
+  d <- st_cohorts(s, pcfg); lev <- c(ST_STATE_LABELS, names(ST_REMOVED_COLORS))
+  d[, lab := factor(fifelse(state == 0L, paste("removed:", ST_REASONS[reason]), ST_STATE_LABELS[as.character(state)]), levels = lev)]
+  ggplot(d, aes(day, row, fill = lab)) + geom_raster() + facet_grid(cohort ~ ., scales = "free_y", space = "free_y") +
+    scale_fill_manual(values = c(ST_STATE_COLORS, ST_REMOVED_COLORS), drop = FALSE) + scale_y_reverse(expand = c(0, 0)) + scale_x_continuous(expand = c(0, 0)) +
+    labs(title = "Part E. Day-by-Day States of a Random Sample of People (50 per Cohort)", x = "Day since the start of the window (first 365 days)", y = "People (one row each, ordered by their first analysed day)", fill = NULL,
+         caption = "Pale colours = days removed, by reason (stream not active, device without heart rate, device unknown). Individual-level picture: check the disclosure rules before it leaves the workspace.") +
+    st_theme() + theme(axis.text.y = element_blank(), axis.ticks.y = element_blank())
 }
 
 plot_st_night_habit <- function(persons, pcfg) {
